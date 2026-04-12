@@ -445,7 +445,7 @@ export default function StockDashboard({ ticker }: Props) {
                 <YAxis tick={axisStyle} axisLine={false} tickLine={false} domain={['auto', 'auto']}
                   tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                 <Tooltip contentStyle={tooltipStyle}
-                  formatter={(v: number) => [fmtPKR(v), 'Close']}
+                  formatter={(v: any) => [fmtPKR(v), 'Close']}
                   labelFormatter={l => `📅 ${l}`} />
                 {stats?.avg_close && (
                   <ReferenceLine y={stats.avg_close} stroke="#00D4AA" strokeDasharray="6 3"
@@ -482,7 +482,7 @@ export default function StockDashboard({ ticker }: Props) {
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false} domain={['auto', 'auto']}
                     tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                   <Tooltip contentStyle={tooltipStyle}
-                    formatter={(v: number, name: string) => [fmtPKR(v), name === 'high' ? '🟢 High' : '🔴 Low']}
+                    formatter={(v: any, name: any) => [fmtPKR(v), name === 'high' ? '🟢 High' : '🔴 Low']}
                     labelFormatter={l => `📅 ${l}`} />
                   <Legend formatter={v => v === 'high' ? '🟢 High' : '🔴 Low'} />
                   <Area type="monotone" dataKey="high" stroke="#22C55E" strokeWidth={1.5}
@@ -509,7 +509,7 @@ export default function StockDashboard({ ticker }: Props) {
                   <XAxis dataKey="displayDate" tick={axisStyle} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={fmtVol} />
                   <Tooltip contentStyle={tooltipStyle}
-                    formatter={(v: number) => [fmtVol(v), 'Volume']}
+                    formatter={(v: any) => [fmtVol(v), 'Volume']}
                     labelFormatter={l => `📅 ${l}`} />
                   <Bar dataKey="volume" fill="#6366F1" opacity={0.75} radius={[2, 2, 0, 0]} />
                 </BarChart>
@@ -536,7 +536,7 @@ export default function StockDashboard({ ticker }: Props) {
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false}
                     tickFormatter={v => `${v}%`} />
                   <Tooltip contentStyle={tooltipStyle}
-                    formatter={(v: number) => [`${Number(v).toFixed(2)}%`, 'Daily Change']}
+                    formatter={(v: any) => [`${Number(v).toFixed(2)}%`, 'Daily Change']}
                     labelFormatter={l => `📅 ${l}`} />
                   <ReferenceLine y={0} stroke="var(--border-subtle,#2a3555)" strokeDasharray="4 2" />
                   <Bar dataKey="daily_change_pct" radius={[2, 2, 0, 0]}>

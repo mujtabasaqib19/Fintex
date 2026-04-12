@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     
     # Google Gemini AI (for chat/reasoning only)
     gemini_api_key: str = Field(..., env="GEMINI_API_KEY")
-    chat_model: str = "gemini-2.0-flash"
+    chat_model: str = "gemini-1.5-flash"
     
     # External APIs
     psx_api_key: Optional[str] = Field(None, env="PSX_API_KEY")

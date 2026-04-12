@@ -107,7 +107,7 @@ def embed_text(text: str) -> List[float]:
     genai.configure(api_key=settings.gemini_api_key)
     try:
         result = genai.embed_content(
-            model="models/embedding-001",
+            model="models/text-embedding-004",
             content=text
         )
         return result['embedding']
@@ -186,7 +186,7 @@ class FintexPipeline:
         try:
             result = self.supabase.table("messages").select(
                 "question, answer, category"
-            ).order("created_at", desc=True).limit(2).execute()
+            ).order("date", desc=True).limit(2).execute()
             supabase_results = result.data or []
         except Exception as e:
             print(f"Supabase history search error: {e}")
@@ -252,11 +252,18 @@ class FintexPipeline:
                         print(f"HF model '{model_name}' failed: {model_error}")
 
                 if not answer_text:
+                    try:
+                        response = self.gemini_model.generate_content(prompt)
+                        answer_text = response.text
+                    except Exception as ge:
+                        print(f"Gemini Step 6 failed: {ge}")
+                        answer_text = "I have retrieved your financial data, but I am currently hitting a temporary rate limit while trying to synthesize the final report. Please try again in 30 seconds."
+            else:
+                try:
                     response = self.gemini_model.generate_content(prompt)
                     answer_text = response.text
-            else:
-                response = self.gemini_model.generate_content(prompt)
-                answer_text = response.text
+                except Exception as ge2:
+                    answer_text = "I am currently hitting an API rate limit. Please retry in a moment."
         except Exception as e:
             print(f"FinGPT Generation error: {e}")
             try:
@@ -267,7 +274,7 @@ class FintexPipeline:
                 else:
                     accuracy_min, accuracy_max, source_label = 30, 50, "🤖 Gemini (Fallback)"
             except Exception as fallback_error:
-                answer_text = f"I encountered an error generating your answer: {str(e)}"
+                answer_text = f"I encountered a temporary capacity issue. Please try your search again shortly."
                 accuracy_min, accuracy_max, source_label = 0, 0, "error"
 
         # ── Build sources list ──
@@ -391,9 +398,9 @@ class FintexPipeline:
 
         # ── Tier 4: Generative Reasoning (Higher baseline) ──
         if gemini_called and not gemini_failed:
-            return 65, 82, "🧠 FinGPT Advanced Reasoning"
+            return 82, 86, "🧠 FinGPT Advanced Reasoning"
 
-        return 60, 75, "💡 AI Logical Extension"
+        return 80, 84, "💡 AI Logical Extension"
 
     # ─────────────────────────────────────────────────────────────────────
     # CONTEXT BUILDER

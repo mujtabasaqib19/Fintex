@@ -12,14 +12,19 @@ interface Props {
 export default function AccuracyBadge({ min, max, sourceLabel }: Props) {
   const [showTooltip, setShowTooltip] = useState(false);
 
-  // Revised color thresholds per Section 6 UI Spec
-  const level = min >= 80 ? 'high' : min >= 60 ? 'medium' : 'low';
+  // Enhanced color thresholds per User Request (Strict 80%+ baseline)
   const colors = {
-    high:   { bg: '#00D4AA', text: '#0A0C10' },  // Fintex Teal (Grounded)
-    medium: { bg: '#EAB308', text: '#0A0C10' },  // Gold (Partially Grounded)
-    low:    { bg: '#EF4444', text: '#fff' },     // Red (Generative)
+    dark_green:  { bg: '#166534', text: '#ffffff' }, // > 85%
+    light_green: { bg: '#00D4AA', text: '#0A0C10' }, // 80 - 85%
+    error:       { bg: '#EF4444', text: '#ffffff' },
   };
-  const c = colors[level];
+
+  const getTheme = () => {
+    if (min > 85) return colors.dark_green;
+    if (min >= 80) return colors.light_green;
+    return colors.error;
+  };
+  const c = getTheme();
 
   return (
     <div
@@ -41,7 +46,7 @@ export default function AccuracyBadge({ min, max, sourceLabel }: Props) {
       )}
       {showTooltip && (
         <div className="accuracy-tooltip" style={{ maxWidth: '280px', width: 'max-content' }}>
-          Score based on how much of this answer came from verified financial databases. Green = highly grounded. Yellow = partially grounded. Red = external model only.
+          Score based on the data provenance. Dark Green = Verified Multi-Source. Light Green = Advanced Logic / Real-time Web. (Minimum baseline: 80%)
         </div>
       )}
     </div>

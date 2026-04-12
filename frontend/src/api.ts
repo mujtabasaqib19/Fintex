@@ -39,6 +39,7 @@ export interface ChatResponse {
   source?: string;
   chart_data?: Array<{ date: string; price: number; volume?: number }>;
   ticker?: string;
+  metadata?: Record<string, any>;
 }
 
 export const sendChat = (
