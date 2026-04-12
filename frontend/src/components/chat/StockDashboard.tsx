@@ -650,7 +650,7 @@ export default function StockDashboard({ ticker }: Props) {
                     A conservative price target for the next 6–12 months, assuming current macro conditions hold, could
                     be PKR {resistance.toFixed(2)}, representing a{' '}
                     <strong>
-                      {stats.end_price > 0 ? ((resistance - stats.end_price) / stats.end_price * 100).toFixed(1) : '?'}%
+                      {stats.end_price > 0 && resistance != null ? ((resistance - stats.end_price) / stats.end_price * 100).toFixed(1) : '?'}%
                     </strong>{' '}
                     upside from current levels.
                   </p>

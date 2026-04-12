@@ -24,6 +24,7 @@ interface Message {
   ticker?: string;
   stockSymbol?: string;  // Section 7 — for StockDashboard live data
   category?: string;
+  source?: string;
 }
 
 export default function ChatPage() {
@@ -68,6 +69,7 @@ export default function ChatPage() {
           accuracyMin: msg.accuracy_min || undefined,
           accuracyMax: msg.accuracy_max || undefined,
           category: msg.category || 'general',
+          source: msg.source || undefined,
         });
       }
       setMessages(converted);
@@ -120,8 +122,8 @@ export default function ChatPage() {
       const chartData = res.chart_data || undefined;
       const ticker = res.ticker || undefined;
 
-      // Detect stock symbol for Section 7 StockDashboard
-      const stockSymbol = res.category === 'stocks' ? (res.ticker || ticker) : undefined;
+      // Detect stock symbol for Section 7 StockDashboard (Always show if ticker found)
+      const stockSymbol = res.ticker || ticker;
 
       setMessages((prev) => [
         ...prev,
@@ -135,6 +137,7 @@ export default function ChatPage() {
           ticker,
           stockSymbol,
           category: res.category || 'general',
+          source: res.source,
         },
       ]);
 
@@ -269,8 +272,8 @@ export default function ChatPage() {
                   <p>{msg.content}</p>
                 )}
 
-                {/* Section 7 — Stock Dashboards (Supports single or multi-ticker comparison) */}
-                {msg.role === 'assistant' && msg.category === 'stocks' && msg.stockSymbol && (
+                {/* Section 7 — Stock Dashboards (Renders whenever a ticker is detected) */}
+                {msg.role === 'assistant' && msg.stockSymbol && (
                   <div className="stock-dash-grid">
                     {msg.stockSymbol.split(',').map(sym => (
                        <StockDashboard key={sym} ticker={sym.trim()} />

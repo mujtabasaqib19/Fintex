@@ -20,7 +20,7 @@ import json
 import uuid
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from config.settings import get_settings
@@ -222,11 +222,10 @@ class FintexPipeline:
 
         # ── Step 6: Generate Final Answer (FinGPT - HF Inference) ──
         prompt = self._build_prompt(query, context, category, format)
+        answer_text = ""
         try:
-            # FinGPT always speaks last
             if self.hf_client:
                 hf_errors = []
-                answer_text = ""
                 for model_name in self.hf_chat_models:
                     try:
                         hf_response = self.hf_client.chat_completion(
@@ -235,14 +234,32 @@ class FintexPipeline:
                                 {
                                     "role": "system",
                                     "content": "You are FinGPT, a concise and professional financial assistant focused on Pakistan markets.",
-              else:
-                # Fallback to Gemini but maintain the 'FinGPT' voice prompt
+                                },
+                                {"role": "user", "content": prompt},
+                            ],
+                            max_tokens=1024,
+                            temperature=0.7,
+                            stop=["</s>", "\nUser:", "\nAssistant:"],
+                        )
+                        answer_text = (
+                            hf_response.choices[0].message.content
+                            if getattr(hf_response, "choices", None)
+                            else str(hf_response)
+                        )
+                        if answer_text:
+                            break
+                    except Exception as model_error:
+                        print(f"HF model '{model_name}' failed: {model_error}")
+
+                if not answer_text:
+                    response = self.gemini_model.generate_content(prompt)
+                    answer_text = response.text
+            else:
                 response = self.gemini_model.generate_content(prompt)
                 answer_text = response.text
         except Exception as e:
             print(f"FinGPT Generation error: {e}")
             try:
-                # If HF fails (provider/model/token issues), continue with Gemini.
                 response = self.gemini_model.generate_content(prompt)
                 answer_text = response.text
                 if gemini_called and not gemini_failed:
@@ -250,7 +267,6 @@ class FintexPipeline:
                 else:
                     accuracy_min, accuracy_max, source_label = 30, 50, "🤖 Gemini (Fallback)"
             except Exception as fallback_error:
-                print(f"Gemini fallback generation error: {fallback_error}")
                 answer_text = f"I encountered an error generating your answer: {str(e)}"
                 accuracy_min, accuracy_max, source_label = 0, 0, "error"
 
@@ -274,8 +290,6 @@ class FintexPipeline:
                 q_upper = query.upper()
                 words = re.findall(r'\b\w+\b', q_upper)
                 found_tickers = [sym for sym in known_psxsymbols if sym in words]
-                
-                # Deduplicate and sort
                 found_tickers = list(dict.fromkeys(found_tickers))
                 
                 if found_tickers:
@@ -287,7 +301,6 @@ class FintexPipeline:
                             for r in history
                         ]
                 else:
-                    # Fallback: regex for 2–8 uppercase letters
                     routing = self.router.route(query, use_llm=False)
                     entities = [e.upper() for e in routing.get("entities", []) if len(e) >= 2]
                     if entities:
@@ -305,7 +318,8 @@ class FintexPipeline:
             "data_source": source_label,
         }
         if category == "stocks" and detected_ticker:
-            stats = self.stock_retriever.get_price_stats(detected_ticker, days=30)
+            first_ticker = detected_ticker.split(",")[0]
+            stats = self.stock_retriever.get_price_stats(first_ticker, days=30)
             metadata.update({
                 "symbol": detected_ticker,
                 "chart_rendered": True,
@@ -390,22 +404,20 @@ class FintexPipeline:
         """Merge Qdrant + Supabase + Live API results into a single context string."""
         parts = []
         initial_parts_count = 0
+        has_live_data = False
 
-        # Qdrant vector matches → retrieve full content from Supabase chunks
+        # Qdrant vector matches
         if qdrant_results:
             parts.append("## Retrieved from Knowledge Base (Qdrant Vector Search)\n")
             for r in qdrant_results:
                 doc_id = r.get("doc_id", "")
                 score = r.get("score", 0)
-                # Try to fetch the chunk content from Supabase chunks table
                 try:
-                    chunk = self.supabase.table("chunks").select(
-                        "content, category"
-                    ).eq("id", doc_id).single().execute()
+                    chunk = self.supabase.table("chunks").select("content").eq("id", doc_id).single().execute()
                     if chunk.data:
                         parts.append(f"**[Relevance: {score:.2f}]**\n{chunk.data['content']}\n")
-                except Exception:
-                    parts.append(f"**[Vector match, score: {score:.2f}]** (content unavailable)\n")
+                except:
+                    pass
 
         # Supabase keyword matches from message history
         if supabase_results:
@@ -417,12 +429,10 @@ class FintexPipeline:
         # Also get live data for stock queries
         if category == "stocks":
             try:
-                # Force regex-only routing to save quota and ensure reliability
                 routing = self.router.route(query, use_llm=False)
                 entities = routing.get("entities", [])
                 symbols = [e.upper() for e in entities if len(e) >= 2]
                 
-                # Try harder to find a ticker if router missed it
                 if not symbols:
                     q_upper = query.upper()
                     known_psx = ["ENGRO", "HBL", "UBL", "MCB", "MEBL", "OGDC", "PPL", "MARI", "LUCK", "FCCL", "FFBL"]
@@ -433,54 +443,19 @@ class FintexPipeline:
                 
                 if symbols:
                     sym = symbols[0]
-                    time_range = routing.get("time_range", {})
+                    start_date = date.today() - timedelta(days=30)
                     
-                    # Log timeframe detection
-                    start_date = None
-                    end_date = date.today()
-                    
-                    if time_info := time_range.get("start"):
-                        try: start_date = datetime.fromisoformat(time_info).date()
-                        except: pass
-                    
-                    # Natural language timeframe fallbacks (Section 7.0.4)
-                    q_lower = query.lower()
-                    if "last month" in q_lower: start_date = date.today() - timedelta(days=30)
-                    elif "last week" in q_lower: start_date = date.today() - timedelta(days=7)
-                    elif "last year" in q_lower: start_date = date.today() - timedelta(days=365)
-                    elif "last 5 years" in q_lower or "all time" in q_lower: start_date = date(2020, 1, 1)
-
                     parts.append("\n## Supabase Market Data (public.stock_prices)\n")
-                    
-                    # Fetch price history for context
-                    limit = 100 if start_date else 10
-                    history = self.stock_retriever.get_price_history(sym, start_date=start_date, limit=limit)
+                    history = self.stock_retriever.get_price_history(sym, start_date=start_date, limit=20)
                     
                     if history:
                         has_live_data = True
-                        stats = self.stock_retriever.get_price_stats(sym, days=(date.today() - (start_date or (date.today() - timedelta(days=30)))).days)
-                        
+                        stats = self.stock_retriever.get_price_stats(sym, days=30)
                         parts.append(f"### Historical Data and Stats for {sym}:\n")
                         if stats:
                             parts.append(self.stock_retriever.format_stats_for_context(stats) + "\n")
-                        
-                        parts.append("Recent Price Points:\n")
-                        for row in history[-15:]:
+                        for row in history[-10:]:
                             parts.append(f"- Date: {row['date']}, Close: {row['close']}, Vol: {row['volume']}\n")
-                    else:
-                        latest = self.stock_retriever.get_latest_price(sym)
-                        if latest:
-                            has_live_data = True
-                            parts.append("Latest Price Info:\n" + self.stock_retriever.format_price_for_context(latest) + "\n")
-                    
-                    # Web fallback if no DB hits
-                    if not history and not latest:
-                        search_q = f"{sym} stock price performance Pakistan"
-                        web_hits = self.web_retriever.search_general(search_q, limit=3)
-                        if web_hits:
-                            parts.append("\n## Web Data: Historical Context (Fallback)\n")
-                            for hit in web_hits:
-                                parts.append(f"**{hit['title']}**: {hit['content']}\n")
             except Exception as e:
                 print(f"Stock context error: {e}")
 
@@ -488,15 +463,15 @@ class FintexPipeline:
         try:
             web_docs = self.web_retriever.search_news(query, limit=2)
             if web_docs:
+                has_live_data = True
                 parts.append("\n## Live Web Search Results\n")
                 for doc in web_docs:
                     title = doc.get("title", "Untitled")
                     content = doc.get("content", "")[:300]
                     parts.append(f"**{title}**\n{content}...\n")
-        except Exception as e:
-            print(f"Web search error: {e}")
+        except:
+            pass
 
-        has_live_data = len(parts) > initial_parts_count
         context_str = "\n".join(parts) if parts else ""
         return context_str, has_live_data
 
@@ -658,21 +633,15 @@ Your Answer:
         so future queries can semantically retrieve it.
         """
         try:
-            # Build the combined text representation
             combined = (
                 f"Q: {question}\n"
                 f"A: {answer[:300]}\n"
                 f"Category: {category}\n"
                 f"Date: {datetime.utcnow().isoformat()}"
             )
-
-            # Generate embedding
             embedding = embed_text(combined)
-
-            # Generate a new UUID for this chunk
             chunk_id = str(uuid.uuid4())
 
-            # Save to Qdrant
             self.qdrant.upsert_vector(
                 doc_id=chunk_id,
                 embedding=embedding,
@@ -686,7 +655,6 @@ Your Answer:
                 }
             )
 
-            # Save to Supabase chunks table
             self.supabase.table("chunks").insert({
                 "id": chunk_id,
                 "content": combined,
@@ -701,7 +669,6 @@ Your Answer:
             }).execute()
 
             print(f"[Qdrant Sync] Saved chunk {chunk_id} ({category}/{subcategory})")
-
         except Exception as e:
             print(f"[Qdrant Sync Error] {e}")
 
@@ -711,10 +678,7 @@ Your Answer:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate_conversation_title(query: str) -> str:
-    """
-    Generate a short 4-6 word title for a conversation using Gemini.
-    Falls back to truncation if LLM call fails.
-    """
+    """Generate a short 4-6 word title for a conversation."""
     settings = get_settings()
     genai.configure(api_key=settings.gemini_api_key)
     model = genai.GenerativeModel("gemini-2.0-flash")
@@ -728,12 +692,10 @@ def generate_conversation_title(query: str) -> str:
     try:
         response = model.generate_content(prompt)
         title = response.text.strip().strip('"').strip("'")
-        # Safety: clamp length
         if len(title) > 60:
             title = title[:57] + "..."
         return title
     except Exception as e:
         print(f"Title generation error: {e}")
-        # Fallback: first 6 words
         words = query.split()[:6]
         return " ".join(words)
