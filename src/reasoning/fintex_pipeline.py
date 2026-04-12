@@ -53,6 +53,15 @@ CATEGORY_KEYWORDS = {
 }
 
 
+STRONG_THEORY_PATTERNS = [
+    "what is ", "what are ", "what does ",
+    "how does ", "how do ", "how is ",
+    "define ", "explain ",
+    "difference between ", "differ ", "vs ",
+    "meaning of ", "concept of ",
+]
+
+
 def categorize_query(query: str) -> Dict[str, str]:
     """
     Classify a user query into category + subcategory using keyword matching.
@@ -66,9 +75,16 @@ def categorize_query(query: str) -> Dict[str, str]:
             if kw in q:
                 scores[cat] += 1
 
-    best = max(scores, key=scores.get)
-    if scores[best] == 0:
-        best = "general"
+    # Strong-signal override: definitional/explanatory phrasings ("what is",
+    # "how does X differ", "define", "explain", etc.) force the theory track
+    # even when topical keywords like "dividend" or "pe ratio" appear. Those
+    # stock keywords are the *subject* of a theory question, not a trading query.
+    if any(pat in q for pat in STRONG_THEORY_PATTERNS):
+        best = "theory"
+    else:
+        best = max(scores, key=scores.get)
+        if scores[best] == 0:
+            best = "general"
 
     # Detect subcategory
     subcategory = _detect_subcategory(q, best)
@@ -98,22 +114,53 @@ def _detect_subcategory(query: str, category: str) -> str:
 # EMBEDDING HELPER (uses Gemini embedding endpoint)
 # ─────────────────────────────────────────────────────────────────────────────
 
+EMBED_DIM = 768  # must match Qdrant collection dimension
+
+
 def embed_text(text: str) -> List[float]:
     """
-    Generate a 768-dim embedding using Gemini's text-embedding-004.
-    Falls back to a zero vector if embedding fails.
+    Generate a 768-dim embedding. Tries candidates in order; for models that
+    default to a larger dim (e.g. gemini-embedding-001 → 3072), request 768
+    explicitly via output_dimensionality. Any vector of the wrong dim is
+    rejected so we never hand a bad-shape vector to Qdrant.
     """
     settings = get_settings()
     genai.configure(api_key=settings.gemini_api_key)
-    try:
-        result = genai.embed_content(
-            model="models/text-embedding-004",
-            content=text
-        )
-        return result['embedding']
-    except Exception as e:
-        print(f"Embedding error: {e}")
-        return [0.0] * 768
+
+    # (model_name, needs_explicit_dim)
+    candidates = [
+        (settings.embedding_model, False),
+        ("models/embedding-001", False),
+        ("models/text-embedding-004", False),
+        ("models/gemini-embedding-001", True),
+    ]
+    seen = set()
+    last_err = None
+    for model_name, needs_dim in candidates:
+        if model_name in seen:
+            continue
+        seen.add(model_name)
+        try:
+            if needs_dim:
+                result = genai.embed_content(
+                    model=model_name,
+                    content=text,
+                    output_dimensionality=EMBED_DIM,
+                )
+            else:
+                result = genai.embed_content(model=model_name, content=text)
+            vec = result.get('embedding') if isinstance(result, dict) else None
+            if not vec:
+                continue
+            if len(vec) != EMBED_DIM:
+                print(f"Embedding '{model_name}' returned dim {len(vec)}, expected {EMBED_DIM} — skipping")
+                continue
+            return vec
+        except Exception as e:
+            last_err = e
+            continue
+    print(f"Embedding error (all candidates failed): {last_err}")
+    return [0.0] * EMBED_DIM
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,9 +187,11 @@ class FintexPipeline:
             m for m in fallback_models if m != self.settings.hf_chat_model
         ]
         
-        # Initialize Hugging Face Inference Client for FinGPT
+        # Initialize Hugging Face Inference Client for FinGPT.
+        # Gated on hf_chat_enabled because HF's free serverless router 404s
+        # for open chat models (Qwen/Llama/Gemma/Mistral) — see settings.py.
         self.hf_client = None
-        if self.settings.huggingface_api_key:
+        if self.settings.hf_chat_enabled and self.settings.huggingface_api_key:
             self.hf_client = InferenceClient(
                 token=self.settings.huggingface_api_key
             )
@@ -225,7 +274,7 @@ class FintexPipeline:
         answer_text = ""
         try:
             if self.hf_client:
-                hf_errors = []
+                provider_down = False
                 for model_name in self.hf_chat_models:
                     try:
                         hf_response = self.hf_client.chat_completion(
@@ -249,21 +298,30 @@ class FintexPipeline:
                         if answer_text:
                             break
                     except Exception as model_error:
+                        err_str = str(model_error)
                         print(f"HF model '{model_name}' failed: {model_error}")
+                        # Short-circuit: if HF's router returns 404 for the
+                        # first model, the free serverless tier is effectively
+                        # offline for chat — skip the remaining models and let
+                        # Gemini take over. Saves ~8s of sequential 404s.
+                        if "404" in err_str and "router.huggingface.co" in err_str:
+                            provider_down = True
+                            print("HF serverless router is 404-ing; skipping remaining HF models.")
+                            break
+                        if "429" in err_str:
+                            import time
+                            time.sleep(1)
 
                 if not answer_text:
-                    try:
-                        response = self.gemini_model.generate_content(prompt)
-                        answer_text = response.text
-                    except Exception as ge:
-                        print(f"Gemini Step 6 failed: {ge}")
-                        answer_text = "I have retrieved your financial data, but I am currently hitting a temporary rate limit while trying to synthesize the final report. Please try again in 30 seconds."
+                    answer_text = self._gemini_with_retry(prompt)
+                    if not answer_text:
+                        answer_text = self._context_only_fallback(query, context, category)
+                        accuracy_min, accuracy_max, source_label = 30, 45, "📂 Context-Only Summary (LLMs unavailable)"
             else:
-                try:
-                    response = self.gemini_model.generate_content(prompt)
-                    answer_text = response.text
-                except Exception as ge2:
-                    answer_text = "I am currently hitting an API rate limit. Please retry in a moment."
+                answer_text = self._gemini_with_retry(prompt)
+                if not answer_text:
+                    answer_text = self._context_only_fallback(query, context, category)
+                    accuracy_min, accuracy_max, source_label = 30, 45, "📂 Context-Only Summary (LLMs unavailable)"
         except Exception as e:
             print(f"FinGPT Generation error: {e}")
             try:
@@ -274,46 +332,45 @@ class FintexPipeline:
                 else:
                     accuracy_min, accuracy_max, source_label = 30, 50, "🤖 Gemini (Fallback)"
             except Exception as fallback_error:
-                answer_text = f"I encountered a temporary capacity issue. Please try your search again shortly."
-                accuracy_min, accuracy_max, source_label = 0, 0, "error"
+                print(f"Gemini outer fallback failed: {fallback_error}")
+                answer_text = self._context_only_fallback(query, context, category)
+                accuracy_min, accuracy_max, source_label = 30, 45, "📂 Context-Only Summary (LLMs unavailable)"
 
         # ── Build sources list ──
         sources = self._build_sources(qdrant_results, supabase_results, category, source_label)
 
-        # ── Step 7: Fetch chart data for stock queries ──
+        # ── Step 7: Fetch chart data whenever a known PSX ticker is mentioned ──
+        # This runs regardless of category so that comparison ("ENGRO vs FFBL")
+        # and stock-themed theory ("explain HBL's dividend yield") queries still
+        # render the dashboard. Safety: we only match a hardcoded whitelist of
+        # symbols literally present as whole words, so English words like "HOW"
+        # or "RATIO" cannot be promoted to fake tickers.
         chart_data = None
         detected_ticker = None
-        if category == "stocks":
-            try:
-                import re
-                known_psxsymbols = {
-                    "ENGRO", "HBL", "UBL", "MCB", "MEBL", "OGDC", "PPL", "MARI",
-                    "LUCK", "FCCL", "TRG", "SYS", "HUBC", "KAPCO", "KEL", "NESTLE",
-                    "FFC", "FATIMA", "BOP", "NBP", "UNITY", "PSMC", "INDU", "HCAR",
-                    "MLCF", "CHCC", "POL", "FNEL", "WTL", "PAEL", "ENGROH", "WAVES",
-                    "AVN", "PTC", "KAPCO", "AABS", "KML", "MARI", "TPLRF1", "FFBL",
-                }
-                # Find all mentioned PSX symbols
-                q_upper = query.upper()
-                words = re.findall(r'\b\w+\b', q_upper)
-                found_tickers = [sym for sym in known_psxsymbols if sym in words]
-                found_tickers = list(dict.fromkeys(found_tickers))
-                
-                if found_tickers:
-                    detected_ticker = ",".join(found_tickers)
-                    history = self.stock_retriever.get_price_history(found_tickers[0], limit=100)
-                    if history:
-                        chart_data = [
-                            {"date": r.get("date", ""), "price": float(r.get("close", 0))}
-                            for r in history
-                        ]
-                else:
-                    routing = self.router.route(query, use_llm=False)
-                    entities = [e.upper() for e in routing.get("entities", []) if len(e) >= 2]
-                    if entities:
-                        detected_ticker = ",".join(list(dict.fromkeys(entities)))
-            except Exception as e:
-                print(f"Chart error: {e}")
+        try:
+            import re
+            known_psxsymbols = {
+                "ENGRO", "HBL", "UBL", "MCB", "MEBL", "OGDC", "PPL", "MARI",
+                "LUCK", "FCCL", "TRG", "SYS", "HUBC", "KAPCO", "KEL", "NESTLE",
+                "FFC", "FATIMA", "BOP", "NBP", "UNITY", "PSMC", "INDU", "HCAR",
+                "MLCF", "CHCC", "POL", "FNEL", "WTL", "PAEL", "ENGROH", "WAVES",
+                "AVN", "PTC", "AABS", "KML", "TPLRF1", "FFBL", "EFERT",
+            }
+            q_upper = query.upper()
+            words = set(re.findall(r'\b\w+\b', q_upper))
+            found_tickers = [sym for sym in known_psxsymbols if sym in words]
+            found_tickers = list(dict.fromkeys(found_tickers))
+
+            if found_tickers:
+                detected_ticker = ",".join(found_tickers)
+                history = self.stock_retriever.get_price_history(found_tickers[0], limit=100)
+                if history:
+                    chart_data = [
+                        {"date": r.get("date", ""), "price": float(r.get("close", 0))}
+                        for r in history
+                    ]
+        except Exception as e:
+            print(f"Chart error: {e}")
 
         # ── Step 8: Save back to Qdrant ──
         self._save_to_qdrant(query, answer_text, category, subcategory, user_id, conversation_id)
@@ -324,7 +381,7 @@ class FintexPipeline:
             "subcategory": subcategory,
             "data_source": source_label,
         }
-        if category == "stocks" and detected_ticker:
+        if detected_ticker:
             first_ticker = detected_ticker.split(",")[0]
             stats = self.stock_retriever.get_price_stats(first_ticker, days=30)
             metadata.update({
@@ -368,6 +425,96 @@ class FintexPipeline:
         return result
 
     # ─────────────────────────────────────────────────────────────────────
+    # RESILIENT SYNTHESIS HELPERS
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _gemini_with_retry(self, prompt: str, attempts: int = 2) -> str:
+        """
+        Call Gemini with exponential backoff plus model fallback.
+        Tries the primary chat_model first, then each fallback model — so if
+        the primary is quota=0 on the free tier, we move on instead of burning
+        all retries on the same dead model.
+        """
+        import time
+        fallbacks = [m.strip() for m in self.settings.chat_model_fallbacks.split(",") if m.strip()]
+        model_chain = [self.settings.chat_model] + [m for m in fallbacks if m != self.settings.chat_model]
+
+        for model_name in model_chain:
+            delay = 1.5
+            try:
+                model = genai.GenerativeModel(model_name)
+            except Exception as e:
+                print(f"Gemini model '{model_name}' init failed: {e}")
+                continue
+
+            for i in range(attempts):
+                try:
+                    response = model.generate_content(prompt)
+                    text = getattr(response, "text", "") or ""
+                    if text.strip():
+                        # Promote the working model so subsequent calls use it
+                        self.gemini_model = model
+                        return text
+                except Exception as e:
+                    msg = str(e).lower()
+                    print(f"Gemini '{model_name}' attempt {i+1}/{attempts} failed: {e}")
+                    quota_zero = "limit: 0" in msg or "quota" in msg and "free_tier" in msg
+                    transient = any(s in msg for s in ["503", "unavailable", "500", "internal"])
+                    # If quota is literally zero for this model, do not retry it — jump to next model
+                    if quota_zero:
+                        break
+                    # For transient 5xx, retry this model. For other 429, also retry once.
+                    if not (transient or "429" in msg) or i == attempts - 1:
+                        break
+                    time.sleep(delay)
+                    delay *= 2
+        return ""
+
+    def _context_only_fallback(self, query: str, context: str, category: str) -> str:
+        """
+        Last-resort answer when both FinGPT (HF) and Gemini are unavailable.
+        Surfaces retrieved context directly — prioritising live SerpAPI web
+        results when present so the user still gets a useful answer.
+        """
+        web_docs = []
+        try:
+            if category == "theory":
+                web_docs = self.web_retriever.search_general(query, limit=5)
+            else:
+                web_docs = self.web_retriever.search_news(query, limit=5) \
+                    or self.web_retriever.search_general(query, limit=5)
+        except Exception as e:
+            print(f"SerpAPI fallback fetch failed: {e}")
+
+        if web_docs:
+            lines = [
+                f"### 🌐 Live Web Results for: *{query}*\n",
+                "_Synthesis engines are busy; here are the most relevant live "
+                "sources fetched via SerpAPI:_\n",
+            ]
+            for d in web_docs:
+                title = d.get("title", "Untitled")
+                snippet = d.get("content", "")[:400]
+                url = d.get("url", "")
+                lines.append(f"**[{title}]({url})**\n{snippet}\n")
+            if context.strip():
+                lines.append("\n---\n\n### Additional Indexed Context\n")
+                lines.append(context)
+            return "\n".join(lines)
+
+        if context.strip():
+            return (
+                f"### ⚠️ Partial Answer — Synthesis Unavailable\n\n"
+                f"Here is the raw evidence retrieved for your question:\n\n"
+                f"**Question:** {query}\n\n---\n\n{context}\n\n---\n\n"
+                f"*Please retry in ~30 seconds for a fully synthesized answer.*"
+            )
+        return (
+            "⚠️ Synthesis engines are temporarily unavailable and no indexed "
+            "context was retrieved for this query. Please retry in ~30 seconds."
+        )
+
+    # ─────────────────────────────────────────────────────────────────────
     # DECISION MATRIX (Section 6, Step 4)
     # ─────────────────────────────────────────────────────────────────────
 
@@ -376,31 +523,29 @@ class FintexPipeline:
                          gemini_called: bool, gemini_failed: bool) -> Tuple[int, int, str]:
         """
         Returns (accuracy_min, accuracy_max, source_label) per Section 6 Scoring Logic.
-        Updated for 'High Confidence' baseline.
         """
-        # ── Tier 1: Multi-Source Verification (Gold Standard) ──
+        # 1. Qdrant ✅ + Supabase ✅ (both had relevant data)
         if qdrant_found and (supabase_found or has_live_data):
-            return 92, 98, "✅ Multi-Source Verified"
+            return 88, 96, "✅ Grounded in Verified Indexed Data"
             
-        # ── Tier 2: Real-Time Verified ──
-        if has_live_data and supabase_found:
-            return 90, 96, "📊 Real-Time Market Data"
-            
-        if has_live_data:
-            return 88, 95, "🌐 Real-Time Web Verified"
-
-        # ── Tier 3: Knowledge Base ──
+        # 2. Qdrant ✅ only
         if qdrant_found:
-            return 85, 94, "📚 Verified Knowledge Base"
+            return 75, 87, "📚 Verified Knowledge Base"
             
-        if supabase_found:
-            return 82, 92, "📂 Internal Database Records"
+        # 3. Supabase ✅ only
+        if supabase_found or has_live_data:
+            return 70, 82, "📂 Internal Database Records"
 
-        # ── Tier 4: Generative Reasoning (Higher baseline) ──
+        # 4. Gemini → FinGPT refinement (Full fallback)
         if gemini_called and not gemini_failed:
-            return 82, 86, "🧠 FinGPT Advanced Reasoning"
+            return 42, 60, "💡 FinGPT Refined (from External Context)"
 
-        return 80, 84, "💡 AI Logical Extension"
+        # 5. FinGPT failed, Gemini answered directly (Emergency fallback)
+        if gemini_failed or (not qdrant_found and not supabase_found and not gemini_called):
+             return 30, 45, "🤖 AI Logical Extension"
+
+        # Default (FinGPT only / no DB hit)
+        return 58, 72, "🧠 FinGPT Primary Reasoning"
 
     # ─────────────────────────────────────────────────────────────────────
     # CONTEXT BUILDER
@@ -466,18 +611,30 @@ class FintexPipeline:
             except Exception as e:
                 print(f"Stock context error: {e}")
 
-        # Supplement with live web search
+        # Supplement with live web search (SerpAPI)
+        # For stocks / news-ish queries → Google News. For theory / definitional
+        # queries → Google general search (news results are noisy for "what is X").
         try:
-            web_docs = self.web_retriever.search_news(query, limit=2)
+            web_docs = []
+            if category == "theory":
+                web_docs = self.web_retriever.search_general(query, limit=4)
+            else:
+                web_docs = self.web_retriever.search_news(query, limit=3)
+                if not web_docs:
+                    web_docs = self.web_retriever.search_general(query, limit=3)
+
             if web_docs:
                 has_live_data = True
-                parts.append("\n## Live Web Search Results\n")
+                header = "Live Web Search (SerpAPI · Google News)" if category != "theory" \
+                    else "Live Web Search (SerpAPI · Google)"
+                parts.append(f"\n## {header}\n")
                 for doc in web_docs:
                     title = doc.get("title", "Untitled")
-                    content = doc.get("content", "")[:300]
-                    parts.append(f"**{title}**\n{content}...\n")
-        except:
-            pass
+                    content = doc.get("content", "")[:400]
+                    url = doc.get("url", "")
+                    parts.append(f"**{title}**\n{content}...\n[Source]({url})\n")
+        except Exception as e:
+            print(f"SerpAPI context fetch failed: {e}")
 
         context_str = "\n".join(parts) if parts else ""
         return context_str, has_live_data
@@ -688,7 +845,7 @@ def generate_conversation_title(query: str) -> str:
     """Generate a short 4-6 word title for a conversation."""
     settings = get_settings()
     genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel(settings.chat_model)
 
     prompt = (
         f'Given this user question: "{query}"\n'

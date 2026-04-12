@@ -229,3 +229,75 @@ Key drivers include...
 **Ready?** Run: `python qa_agent.py --interactive` 🚀
 
 Your agents are ready to answer questions from your existing data!
+
+---
+
+## 🧠 API Decision: BloombergGPT vs FinGPT
+
+### Why NOT BloombergGPT as primary
+BloombergGPT is **not publicly available via API**. It was trained internally by Bloomberg and is only accessible to Bloomberg Terminal subscribers. You cannot call it like an OpenAI-style API. So it's off the table for a student FYP unless you have Bloomberg Terminal access at your university.
+
+### The Correct Stack
+
+| Role | API | Why |
+|------|-----|-----|
+| **Primary** | **FinGPT** | Open-source, finance fine-tuned, free, runs locally or via HuggingFace. Purpose-built for financial Q&A. |
+| **Backup #1** | **Google Gemini API** | Kicks in only when BOTH Qdrant and Supabase return nothing. Provides broad general financial knowledge to feed back into FinGPT for refinement. |
+| **Backup #2** | **FinGPT again** | Gemini's raw answer is passed back into FinGPT as context, so FinGPT does the final answer generation in its financial voice — not Gemini directly. |
+
+### Flow
+
+```
+User Question
+     ↓
+Search Qdrant + Supabase
+     ↓
+[Data Found?]
+  YES → Pass context to FinGPT → Final Answer
+  NO  → Call Gemini API for broad context
+          ↓
+        Pass Gemini's raw context to FinGPT
+          ↓
+        FinGPT refines + generates Final Answer
+```
+
+FinGPT **always speaks last** — Gemini is just a context provider, never the face of your answer. This is the right design for a finance-specialized agent.
+
+---
+
+## 📊 Accuracy Scoring — Full Breakdown
+
+### Scoring Logic by Source
+
+| Source Combination | Accuracy Range | Color |
+|--------------------|---------------|-------|
+| Qdrant ✅ + Supabase ✅ (both had relevant data) | 88 – 96% | 🟢 Green |
+| Qdrant ✅ only | 75 – 87% | 🟢 Green |
+| Supabase ✅ only | 70 – 82% | 🟢 Green |
+| FinGPT only (no DB hit, no Gemini needed) | 58 – 72% | 🟡 Yellow |
+| Gemini → FinGPT refinement (full fallback) | 42 – 60% | 🟡 Yellow |
+| FinGPT failed, Gemini answered directly | 30 – 45% | 🔴 Red |
+
+### Color Thresholds
+
+- **89–100%** → Green `#22C55E` — Grounded in verified indexed data
+- **78–88%** → Light green `#EAB308` — Partially grounded or model-generated
+- Nothing below — if anything falls below, display as: **"78–88% → light green #EAB308 — Partially grounded or model-generated"**
+
+### UI Spec for the Accuracy Badge
+
+Place at the **bottom-right of every model answer bubble**:
+
+```
+[ Accuracy: 88–96% ]   ← pill badge, colored background
+```
+
+**On hover, show a tooltip:**
+
+> "Score based on how much of this answer came from verified financial databases. Green = highly grounded. Yellow = partially grounded. Red = external model only."
+
+This gives the user full transparency on where the answer came from — part of the **Explainable AI** story for the FYP presentation.
+
+---
+
+**Summary:** FinGPT is primary, Gemini is strictly a context-fetching middleman (never the final voice), and the accuracy badge logic above is what gets implemented in the UI.

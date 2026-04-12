@@ -443,7 +443,7 @@ export default function StockDashboard({ ticker }: Props) {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle,#2a3555)" vertical={false} />
                 <XAxis dataKey="displayDate" tick={axisStyle} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                 <YAxis tick={axisStyle} axisLine={false} tickLine={false} domain={['auto', 'auto']}
-                  tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                  tickFormatter={v => v >= 1000 ? `${(v / 1000).toFixed(1)}K` : v.toString()} />
                 <Tooltip contentStyle={tooltipStyle}
                   formatter={(v: any) => [fmtPKR(v), 'Close']}
                   labelFormatter={l => `📅 ${l}`} />
@@ -480,7 +480,7 @@ export default function StockDashboard({ ticker }: Props) {
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle,#2a3555)" vertical={false} />
                   <XAxis dataKey="displayDate" tick={axisStyle} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false} domain={['auto', 'auto']}
-                    tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                    tickFormatter={v => v >= 1000 ? `${(v / 1000).toFixed(1)}K` : v.toString()} />
                   <Tooltip contentStyle={tooltipStyle}
                     formatter={(v: any, name: any) => [fmtPKR(v), name === 'high' ? '🟢 High' : '🔴 Low']}
                     labelFormatter={l => `📅 ${l}`} />

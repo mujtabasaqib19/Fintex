@@ -35,7 +35,12 @@ class Settings(BaseSettings):
     
     # Google Gemini AI (for chat/reasoning only)
     gemini_api_key: str = Field(..., env="GEMINI_API_KEY")
-    chat_model: str = "gemini-1.5-flash"
+    chat_model: str = "gemini-2.5-flash"
+    chat_model_fallbacks: str = Field(
+        default="gemini-flash-latest,gemini-2.0-flash,gemini-1.5-flash-002,gemini-pro-latest",
+        env="CHAT_MODEL_FALLBACKS",
+    )
+    embedding_model: str = "models/embedding-001"
     
     # External APIs
     psx_api_key: Optional[str] = Field(None, env="PSX_API_KEY")
@@ -50,11 +55,16 @@ class Settings(BaseSettings):
             "hf_token",
         ),
     )
-    hf_chat_model: str = Field(default="meta-llama/Llama-3.1-8B-Instruct", env="HF_CHAT_MODEL")
+    hf_chat_model: str = Field(default="Qwen/Qwen2.5-7B-Instruct", env="HF_CHAT_MODEL")
     hf_fallback_models: str = Field(
-        default="mistralai/Mistral-7B-Instruct-v0.2,Qwen/Qwen2.5-7B-Instruct,google/gemma-2-9b-it",
+        default="meta-llama/Llama-3.1-8B-Instruct,HuggingFaceH4/zephyr-7b-beta,google/gemma-2-9b-it,mistralai/Mistral-7B-Instruct-v0.3",
         env="HF_FALLBACK_MODELS",
     )
+    # HF's free serverless `hf-inference` provider deprecated chat-completion
+    # routing for these open models, so requests 404 at router.huggingface.co.
+    # Keep this OFF by default — Gemini is primary. Flip to true only if you
+    # have an HF PRO / paid-provider token that can serve these models.
+    hf_chat_enabled: bool = Field(default=False, env="HF_CHAT_ENABLED")
     
     # Processing
     chunk_size: int = 1000
