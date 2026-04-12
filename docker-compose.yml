@@ -1,0 +1,51 @@
+services:
+  # ── Ollama Embedding Server ─────────────────────────────────────────
+  ollama:
+    image: ollama/ollama
+    container_name: pipeline-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./ollama-entrypoint.sh:/entrypoint.sh:ro
+    ports:
+      - "11434:11434"
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 300s
+    restart: unless-stopped
+
+  # ── FastAPI Backend ─────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pipeline-backend
+    env_file: .env
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  # ── Nginx Reverse Proxy ────────────────────────────────────────────
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: pipeline-nginx
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+    restart: unless-stopped
+
+volumes:
+  ollama_data:

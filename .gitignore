@@ -1,0 +1,47 @@
+# Environments
+.env
+.env.local
+.venv
+venv
+ENV
+env
+
+# Dependencies
+node_modules
+dist
+build
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.pdf
+.docx
+
+# Docker
+.dockerignore
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project specific
+out.txt
+chat_dump.txt
+tmp_psx_test.py
