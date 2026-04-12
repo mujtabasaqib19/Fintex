@@ -269,9 +269,13 @@ export default function ChatPage() {
                   <p>{msg.content}</p>
                 )}
 
-                {/* Section 7 — Full Stock Dashboard (replaces old StockChart + InvestmentOpinion) */}
+                {/* Section 7 — Stock Dashboards (Supports single or multi-ticker comparison) */}
                 {msg.role === 'assistant' && msg.category === 'stocks' && msg.stockSymbol && (
-                  <StockDashboard ticker={msg.stockSymbol} />
+                  <div className="stock-dash-grid">
+                    {msg.stockSymbol.split(',').map(sym => (
+                       <StockDashboard key={sym} ticker={sym.trim()} />
+                    ))}
+                  </div>
                 )}
 
                 {/* Further Reading Links for theory answers */}

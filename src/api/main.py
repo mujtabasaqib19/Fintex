@@ -982,6 +982,49 @@ async def stock_query(
 
 
 # =============================================================================
+# DEEP FUNDAMENTAL DATA & ALERTS
+# =============================================================================
+
+@router.get("/stock/fundamentals")
+async def get_fundamentals(
+    symbol: str = Query(..., description="Stock symbol")
+):
+    """Fetch annual fundamentals (EPS, Revenue, Profit) for a scrip."""
+    from src.retrieval.pakistan_stock_retriever import PakistanStockRetriever
+    retriever = PakistanStockRetriever()
+    data = retriever.get_fundamentals(symbol)
+    if not data:
+        return {"symbol": symbol, "data": []}
+    return {"symbol": symbol, "data": data}
+
+@router.post("/stock/alert")
+async def create_alert(
+    symbol: str = Query(...),
+    price: float = Query(...),
+    condition: str = Query(...),
+    user_id: str = Query(...)
+):
+    """Create a new price alert trigger."""
+    from src.db.connection import get_supabase_client
+    supabase = get_supabase_client()
+    res = supabase.table("price_alerts").insert({
+        "symbol": symbol.upper(),
+        "target_price": price,
+        "condition": condition,
+        "user_id": user_id,
+        "is_active": True
+    }).execute()
+    return res.data[0] if res.data else {"error": "Failed to create alert"}
+
+@router.get("/stock/alerts")
+async def get_alerts(user_id: str = Query(...)):
+    """Fetch all active alerts for a user."""
+    from src.db.connection import get_supabase_client
+    supabase = get_supabase_client()
+    res = supabase.table("price_alerts").select("*").eq("user_id", user_id).execute()
+    return res.data or []
+
+# =============================================================================
 # REGISTER ROUTER & RUN SERVER
 # =============================================================================
 

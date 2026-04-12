@@ -1,68 +1,85 @@
 -- =============================================================================
--- FINTEX SCHEMA V2 — PERSONALIZATION & FUNDAMENTALS
+-- FINTEX SCHEMA v2.0
+-- Deep Fundamental Data Tier & Agentic Actions
+-- Includes: Fundamentals, Price Alerts, and Reporting metadata
 -- =============================================================================
 
--- 1. USER PORTFOLIOS
--- Tracks what stocks the user owns for the "Personal Advisor" feature.
-CREATE TABLE IF NOT EXISTS public.portfolios (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-    symbol TEXT NOT NULL, -- e.g. ENGRO, FFBL
-    quantity NUMERIC DEFAULT 0,
-    avg_purchase_price NUMERIC DEFAULT 0,
-    total_investment NUMERIC GENERATED ALWAYS AS (quantity * avg_purchase_price) STORED,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE(user_id, symbol)
-);
-
--- 2. COMPANY FUNDAMENTALS (PSX Specific)
--- Stores 3nd-year financial health snapshots.
--- Note: Reference constraint on symbol removed because stock_prices(symbol) is not unique.
-CREATE TABLE IF NOT EXISTS public.company_fundamentals (
+-- =============================================================================
+-- 1. COMPANY FUNDAMENTALS TABLE
+-- Stores fiscal performance metrics and valuation ratios
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS company_fundamentals (
     id SERIAL PRIMARY KEY,
-    symbol TEXT NOT NULL, 
-    fiscal_year INT NOT NULL,
-    eps NUMERIC,             -- Earnings Per Share
-    pe_ratio NUMERIC,        -- Price to Earnings
-    div_yield NUMERIC,       -- Dividend Yield %
-    revenue_bn NUMERIC,      -- Revenue in Billion PKR
-    profit_bn NUMERIC,       -- Net Profit in Billion PKR
-    debt_equity_ratio NUMERIC,
-    last_updated TIMESTAMPTZ DEFAULT now(),
+    symbol TEXT NOT NULL,
+    fiscal_year INTEGER NOT NULL,
+    revenue NUMERIC(20, 2),
+    net_profit NUMERIC(20, 2),
+    eps NUMERIC(10, 2),
+    pe_ratio NUMERIC(10, 2),
+    dividend_yield NUMERIC(10, 2),
+    market_cap NUMERIC(20, 2),
+    last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(symbol, fiscal_year)
 );
 
--- 3. USER PRICE ALERTS
--- Allows agent to monitor price drops/spikes.
-CREATE TABLE IF NOT EXISTS public.price_alerts (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+CREATE INDEX IF NOT EXISTS idx_fundamentals_symbol ON company_fundamentals(symbol);
+CREATE INDEX IF NOT EXISTS idx_fundamentals_year ON company_fundamentals(fiscal_year);
+
+COMMENT ON TABLE company_fundamentals IS 'Annual financial performance metrics and valuation ratios for PSX companies';
+
+-- =============================================================================
+-- 2. PRICE ALERTS TABLE
+-- Stores user-defined price notification triggers
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS price_alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     symbol TEXT NOT NULL,
-    target_price NUMERIC NOT NULL,
+    target_price NUMERIC(10, 2) NOT NULL,
     condition TEXT CHECK (condition IN ('above', 'below')),
-    is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    triggered_at TIMESTAMPTZ
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    triggered_at TIMESTAMP WITH TIME ZONE
 );
 
--- 4. NEWS CRAWLER LOGS
--- Tracks ingestion health for the autonomous news worker.
-CREATE TABLE IF NOT EXISTS public.ingestion_logs (
-    id SERIAL PRIMARY KEY,
-    source TEXT NOT NULL, -- e.g. 'SBP Press Release', 'PSX News'
-    url TEXT UNIQUE,
-    status TEXT,
-    items_count INT DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT now()
+CREATE INDEX IF NOT EXISTS idx_price_alerts_user ON price_alerts(user_id);
+CREATE INDEX IF NOT EXISTS idx_price_alerts_symbol ON price_alerts(symbol);
+CREATE INDEX IF NOT EXISTS idx_price_alerts_active ON price_alerts(is_active);
+
+COMMENT ON TABLE price_alerts IS 'User price alerts for background tracking and notifications';
+
+-- =============================================================================
+-- 3. REPORTING LOG TABLE
+-- Tracks generated PDF reports and analytical exports
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS analytical_reports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id),
+    conversation_id UUID REFERENCES conversations(id),
+    symbol TEXT NOT NULL,
+    report_type TEXT DEFAULT 'pdf_analysis',
+    file_path TEXT, -- If stored in Supabase Storage
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Enable RLS (simplified for now - same as messages)
-ALTER TABLE public.portfolios ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.price_alerts ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_reports_user ON analytical_reports(user_id);
+CREATE INDEX IF NOT EXISTS idx_reports_symbol ON analytical_reports(symbol);
 
-CREATE POLICY "Users can manage their own portfolio" ON public.portfolios
-    USING (auth.uid() = user_id);
+-- =============================================================================
+-- 4. RLS POLICIES
+-- =============================================================================
+ALTER TABLE company_fundamentals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytical_reports ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Users can manage their own alerts" ON public.price_alerts
-    USING (auth.uid() = user_id);
+-- Public read for fundamentals
+CREATE POLICY "Public read fundamentals" ON company_fundamentals
+    FOR SELECT USING (true);
+
+-- Users see their own alerts
+CREATE POLICY "Users access own alerts" ON price_alerts
+    FOR ALL USING (true);
+
+-- Users see their own reports
+CREATE POLICY "Users access own reports" ON analytical_reports
+    FOR ALL USING (true);

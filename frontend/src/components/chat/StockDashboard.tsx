@@ -13,8 +13,10 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   ReferenceLine, Cell, Legend,
 } from 'recharts';
-import { fetchStockQuery, type StockQueryResponse, type StockDataPoint } from '../../api';
-import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ChevronDown, ChevronUp } from 'lucide-react';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
+import { fetchStockQuery, fetchStockFundamentals, createStockAlert, type StockQueryResponse, type StockDataPoint, type StockFundamental } from '../../api';
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ChevronDown, ChevronUp, FileText, Bell, History, Activity } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -157,6 +159,43 @@ export default function StockDashboard({ ticker }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [opinionExpanded, setOpinionExpanded] = useState(true);
+  const [activeTab, setActiveTab] = useState<'technical' | 'fundamental'>('technical');
+  const [fundamentals, setFundamentals] = useState<StockFundamental[]>([]);
+  const [loadingFunds, setLoadingFunds] = useState(false);
+
+  const downloadPDF = async () => {
+    const element = document.getElementById(`stock-report-${ticker}`);
+    if (!element) return;
+    
+    // Switch to technical tab to ensure charts are visible if needed
+    // or just capture current view.
+    
+    const canvas = await html2canvas(element, { scale: 2, backgroundColor: '#0A0C10' });
+    const imgData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const imgProps = pdf.getImageProperties(imgData);
+    const pdfWidth = pdf.internal.pageSize.getWidth();
+    const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+    
+    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+    pdf.save(`Fintex_Report_${ticker.toUpperCase()}_${new Date().toISOString().split('T')[0]}.pdf`);
+  };
+
+  const loadFundamentals = useCallback(async () => {
+    setLoadingFunds(true);
+    try {
+      const res = await fetchStockFundamentals(ticker);
+      setFundamentals(res.data);
+    } catch (e) {
+      console.error('Failed to load fundamentals', e);
+    } finally {
+      setLoadingFunds(false);
+    }
+  }, [ticker]);
+
+  useEffect(() => {
+    if (activeTab === 'fundamental') loadFundamentals();
+  }, [activeTab, loadFundamentals]);
 
   const loadData = useCallback(async (tf: Timeframe) => {
     setLoading(true);
@@ -203,7 +242,32 @@ export default function StockDashboard({ ticker }: Props) {
   // ─────────────────────────────────────────────────────
 
   return (
-    <div className="stock-dashboard">
+    <div className="stock-dashboard" id={`stock-report-${ticker}`}>
+      {/* ── Dashboard Header Actions ── */}
+      <div className="stock-dashboard-actions">
+        <div className="dashboard-tabs">
+          <button 
+            className={`tab-btn ${activeTab === 'technical' ? 'active' : ''}`}
+            onClick={() => setActiveTab('technical')}
+          >
+            <Activity size={14} /> Technical Analysis
+          </button>
+          <button 
+            className={`tab-btn ${activeTab === 'fundamental' ? 'active' : ''}`}
+            onClick={() => setActiveTab('fundamental')}
+          >
+            <History size={14} /> Fundamental Health
+          </button>
+        </div>
+        <div className="dashboard-tools">
+          <button className="tool-btn btn-alert" title="Set Price Alert">
+            <Bell size={14} /> Monitor Price
+          </button>
+          <button className="tool-btn btn-pdf" onClick={downloadPDF} title="Export Analysis to PDF">
+            <FileText size={14} /> Download PDF Report
+          </button>
+        </div>
+      </div>
 
       {/* ── 2.1 Company Background Card ── */}
       <div className="stock-company-card">
@@ -288,19 +352,67 @@ export default function StockDashboard({ ticker }: Props) {
         </div>
       )}
 
-      {/* ── 2.3 Timeframe Selector ── */}
-      <div className="stock-timeframe-bar">
-        {(['1W', '1M', '3M', '6M', '1Y', '3Y', 'All'] as Timeframe[]).map(tf => (
-          <button
-            key={tf}
-            className={`tf-btn ${timeframe === tf ? 'active' : ''}`}
-            onClick={() => { setTimeframe(tf); }}
-            id={`stock-tf-${tf}`}
-          >
-            {tf}
-          </button>
-        ))}
-      </div>
+      {/* ── 2.3 Timeframe Selector (Only for Technical) ── */}
+      {activeTab === 'technical' && (
+        <div className="stock-timeframe-bar">
+          {(['1W', '1M', '3M', '6M', '1Y', '3Y', 'All'] as Timeframe[]).map(tf => (
+            <button
+              key={tf}
+              className={`tf-btn ${timeframe === tf ? 'active' : ''}`}
+              onClick={() => { setTimeframe(tf); }}
+              id={`stock-tf-${tf}`}
+            >
+              {tf}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {activeTab === 'fundamental' && (
+        <div className="stock-fundamental-panel">
+          <div className="stock-chart-title">
+            <span>🛡️ Strategic Fundamental Health</span>
+            <ChartInfoIcon text="Multi-year financial metrics representing the absolute fiscal strength and valuation ratios of the company." />
+          </div>
+          
+          {loadingFunds ? (
+             <div className="stock-loading"><div className="stock-spinner" /></div>
+          ) : fundamentals.length > 0 ? (
+            <div className="fundamental-table-wrapper">
+              <table className="fundamental-table">
+                <thead>
+                  <tr>
+                    <th>Fiscal Year</th>
+                    <th>Revenue</th>
+                    <th>Net Profit</th>
+                    <th>EPS</th>
+                    <th>P/E Ratio</th>
+                    <th>Div. Yield</th>
+                    <th>Market Cap</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fundamentals.map(f => (
+                    <tr key={f.fiscal_year}>
+                      <td><strong>{f.fiscal_year}</strong></td>
+                      <td>{fmtVol(f.revenue)}</td>
+                      <td>{fmtVol(f.net_profit)}</td>
+                      <td>{f.eps?.toFixed(2)}</td>
+                      <td>{f.pe_ratio?.toFixed(1)}x</td>
+                      <td>{f.dividend_yield?.toFixed(2)}%</td>
+                      <td>{fmtVol(f.market_cap)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+             <div className="stock-no-data">
+                <Info size={16} /> <span>No fundamental historical data found for {ticker.toUpperCase()}.</span>
+             </div>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="stock-loading">
@@ -311,7 +423,7 @@ export default function StockDashboard({ ticker }: Props) {
         <div className="stock-error">
           <AlertTriangle size={16} /> {error}
         </div>
-      ) : chartPoints.length > 0 ? (
+      ) : (activeTab === 'technical' && chartPoints.length > 0) ? (
         <div className="stock-charts-block">
 
           {/* ── Chart A: Close Price Line Chart ── */}

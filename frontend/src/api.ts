@@ -245,3 +245,26 @@ export const fetchStockQuery = (
     `/stock/query?symbol=${encodeURIComponent(symbol)}&start_date=${startDate}&end_date=${endDate}`,
   );
 
+// ── NEW: Fundamentals & Alerts ──
+
+export interface StockFundamental {
+  fiscal_year: number;
+  revenue: number;
+  net_profit: number;
+  eps: number;
+  pe_ratio: number;
+  dividend_yield: number;
+  market_cap: number;
+}
+
+export const fetchStockFundamentals = (symbol: string) =>
+  request<{ symbol: string; data: StockFundamental[] }>(`/stock/fundamentals?symbol=${encodeURIComponent(symbol)}`);
+
+export const createStockAlert = (symbol: string, price: number, condition: 'above' | 'below', userId: string) =>
+  request<any>(`/stock/alert?symbol=${symbol}&price=${price}&condition=${condition}&user_id=${userId}`, {
+    method: 'POST',
+  });
+
+export const fetchStockAlerts = (userId: string) =>
+  request<any[]>(`/stock/alerts?user_id=${userId}`);
+

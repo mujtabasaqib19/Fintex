@@ -235,29 +235,7 @@ class FintexPipeline:
                                 {
                                     "role": "system",
                                     "content": "You are FinGPT, a concise and professional financial assistant focused on Pakistan markets.",
-                                },
-                                {"role": "user", "content": prompt},
-                            ],
-                            max_tokens=1024,
-                            temperature=0.7,
-                            stop=["</s>", "\nUser:", "\nAssistant:"],
-                        )
-
-                        answer_text = (
-                            hf_response.choices[0].message.content
-                            if getattr(hf_response, "choices", None)
-                            else str(hf_response)
-                        )
-                        if answer_text:
-                            break
-                    except Exception as model_error:
-                        err = str(model_error)
-                        hf_errors.append(f"{model_name}: {err}")
-                        print(f"HF model '{model_name}' failed: {err}")
-
-                if not answer_text:
-                    raise RuntimeError("All Hugging Face chat models failed: " + " | ".join(hf_errors))
-            else:
+              else:
                 # Fallback to Gemini but maintain the 'FinGPT' voice prompt
                 response = self.gemini_model.generate_content(prompt)
                 answer_text = response.text
@@ -273,13 +251,8 @@ class FintexPipeline:
                     accuracy_min, accuracy_max, source_label = 30, 50, "🤖 Gemini (Fallback)"
             except Exception as fallback_error:
                 print(f"Gemini fallback generation error: {fallback_error}")
-                if gemini_called and not gemini_failed:
-                    # FinGPT failed, use already-fetched Gemini context answer as last resort.
-                    answer_text = gemini_answer
-                    accuracy_min, accuracy_max, source_label = 30, 45, "🤖 Gemini (Direct)"
-                else:
-                    answer_text = f"I encountered an error generating your answer: {str(e)}"
-                    accuracy_min, accuracy_max, source_label = 0, 0, "error"
+                answer_text = f"I encountered an error generating your answer: {str(e)}"
+                accuracy_min, accuracy_max, source_label = 0, 0, "error"
 
         # ── Build sources list ──
         sources = self._build_sources(qdrant_results, supabase_results, category, source_label)
@@ -289,7 +262,6 @@ class FintexPipeline:
         detected_ticker = None
         if category == "stocks":
             try:
-                # Regex-based ticker extraction: look for 2-8 uppercase letter sequences
                 import re
                 known_psxsymbols = {
                     "ENGRO", "HBL", "UBL", "MCB", "MEBL", "OGDC", "PPL", "MARI",
@@ -298,25 +270,28 @@ class FintexPipeline:
                     "MLCF", "CHCC", "POL", "FNEL", "WTL", "PAEL", "ENGROH", "WAVES",
                     "AVN", "PTC", "KAPCO", "AABS", "KML", "MARI", "TPLRF1", "FFBL",
                 }
-                # Try known PSX symbols first
+                # Find all mentioned PSX symbols
                 q_upper = query.upper()
-                detected_ticker = next(
-                    (sym for sym in sorted(known_psxsymbols, key=len, reverse=True) if sym in q_upper),
-                    None
-                )
-                # Fallback: regex for 2–8 uppercase letters
-                if not detected_ticker:
-                    routing = self.router.route(query, use_llm=False)
-                    entities = routing.get("entities", [])
-                    detected_ticker = next((e.upper() for e in entities if len(e) >= 2), None)
-
-                if detected_ticker:
-                    history = self.stock_retriever.get_price_history(detected_ticker, limit=100)
+                words = re.findall(r'\b\w+\b', q_upper)
+                found_tickers = [sym for sym in known_psxsymbols if sym in words]
+                
+                # Deduplicate and sort
+                found_tickers = list(dict.fromkeys(found_tickers))
+                
+                if found_tickers:
+                    detected_ticker = ",".join(found_tickers)
+                    history = self.stock_retriever.get_price_history(found_tickers[0], limit=100)
                     if history:
                         chart_data = [
                             {"date": r.get("date", ""), "price": float(r.get("close", 0))}
                             for r in history
                         ]
+                else:
+                    # Fallback: regex for 2–8 uppercase letters
+                    routing = self.router.route(query, use_llm=False)
+                    entities = [e.upper() for e in routing.get("entities", []) if len(e) >= 2]
+                    if entities:
+                        detected_ticker = ",".join(list(dict.fromkeys(entities)))
             except Exception as e:
                 print(f"Chart error: {e}")
 

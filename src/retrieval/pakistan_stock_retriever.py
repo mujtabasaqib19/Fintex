@@ -310,6 +310,22 @@ class PakistanStockRetriever:
             stats['trend'] = 'stable'
         
         return stats
+
+    def get_fundamentals(self, symbol: str) -> List[Dict[str, Any]]:
+        """
+        Get annual fundamental data for a stock.
+        """
+        try:
+            result = self.supabase.table("company_fundamentals")\
+                .select("*")\
+                .eq("symbol", symbol.upper())\
+                .order("fiscal_year", desc=True)\
+                .execute()
+            
+            return result.data or []
+        except Exception as e:
+            print(f"Error fetching fundamentals for {symbol}: {e}")
+            return []
     
     def get_volume_analysis(
         self,
