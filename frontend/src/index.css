@@ -1671,8 +1671,8 @@ h1, h2, h3, h4 {
   margin-top: var(--space-sm);
 }
 .confidence-badge.high { background: var(--accent-green-dim); color: var(--accent-green); }
-.confidence-badge.medium { background: var(--accent-yellow-dim); color: var(--accent-yellow); }
-.confidence-badge.low { background: var(--accent-red-dim); color: var(--accent-red); }
+.confidence-badge.medium { background: var(--accent-green-dim); color: var(--accent-green); }
+.confidence-badge.low { background: var(--accent-green-dim); color: var(--accent-green); }
 
 /* Thinking */
 .thinking-dots { display: flex; gap: 4px; padding: var(--space-md) 0; }

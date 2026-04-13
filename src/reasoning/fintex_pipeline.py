@@ -380,6 +380,8 @@ class FintexPipeline:
             "category": category,
             "subcategory": subcategory,
             "data_source": source_label,
+            "sources": sources,
+            "doc_count": len(qdrant_results)
         }
         if detected_ticker:
             first_ticker = detected_ticker.split(",")[0]

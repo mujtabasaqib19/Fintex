@@ -15,18 +15,19 @@ interface Props {
   sourceLabel?: string;
 }
 
-const GREEN = { bg: '#22C55E', text: '#0A0C10' };
-const LIGHT_GREEN = { bg: '#EAB308', text: '#0A0C10' };
+const DARK_GREEN = { bg: '#166534', text: '#FFFFFF' };
+const LIGHT_GREEN = { bg: '#86EFAC', text: '#0A0C10' };
 
 export default function AccuracyBadge({ min, max, sourceLabel }: Props) {
   const [showTooltip, setShowTooltip] = useState(false);
 
   // Floor everything below 78% to the 78–88% light-green band.
+  // 78-88% is light green, anything >= 89% is dark green.
   const isHighGrounded = min >= 89;
-  const displayMin = isHighGrounded ? min : Math.max(min, 78);
-  const displayMax = isHighGrounded ? max : Math.min(Math.max(max, 88), 88);
+  const displayMin = isHighGrounded ? min : 78;
+  const displayMax = isHighGrounded ? max : 88;
 
-  const c = isHighGrounded ? GREEN : LIGHT_GREEN;
+  const c = isHighGrounded ? DARK_GREEN : LIGHT_GREEN;
 
   return (
     <div

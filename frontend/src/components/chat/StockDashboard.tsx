@@ -15,8 +15,8 @@ import {
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
-import { fetchStockQuery, fetchStockFundamentals, createStockAlert, type StockQueryResponse, type StockDataPoint, type StockFundamental } from '../../api';
-import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ChevronDown, ChevronUp, FileText, Bell, History, Activity } from 'lucide-react';
+import { fetchStockQuery, fetchStockFundamentals, type StockQueryResponse, type StockDataPoint, type StockFundamental } from '../../api';
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, Info, ChevronDown, ChevronUp, FileText, History, Activity } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -260,9 +260,7 @@ export default function StockDashboard({ ticker }: Props) {
           </button>
         </div>
         <div className="dashboard-tools">
-          <button className="tool-btn btn-alert" title="Set Price Alert">
-            <Bell size={14} /> Monitor Price
-          </button>
+
           <button className="tool-btn btn-pdf" onClick={downloadPDF} title="Export Analysis to PDF">
             <FileText size={14} /> Download PDF Report
           </button>

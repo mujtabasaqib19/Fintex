@@ -63,6 +63,11 @@ export default function ChatPage() {
       const converted: Message[] = [];
       for (const msg of msgs) {
         converted.push({ role: 'user', content: msg.question });
+        
+        // Extract metadata to restore graphs (stockSymbol) and confidence badges
+        const meta = (msg.metadata as any) || {};
+        const stockSymbol = meta.symbol || meta.ticker || undefined;
+        
         converted.push({
           role: 'assistant',
           content: msg.answer,
@@ -70,6 +75,15 @@ export default function ChatPage() {
           accuracyMax: msg.accuracy_max || undefined,
           category: msg.category || 'general',
           source: msg.source || undefined,
+          stockSymbol,
+          data: {
+            answer: msg.answer,
+            confidence: {
+              level: (msg.accuracy_min || 0) >= 80 ? 'high' : (msg.accuracy_min || 0) >= 50 ? 'medium' : 'low',
+              document_count: meta.doc_count || 0
+            },
+            sources: meta.sources || [] 
+          }
         });
       }
       setMessages(converted);
@@ -297,8 +311,7 @@ export default function ChatPage() {
                 {msg.data?.confidence && (
                   <div className={`confidence-badge ${msg.data.confidence.level}`}>
                     {msg.data.confidence.level === 'high' ? '●' : msg.data.confidence.level === 'medium' ? '◐' : '○'}
-                    {' '}{msg.data.confidence.level} confidence
-                    {msg.data.confidence.document_count ? ` · ${msg.data.confidence.document_count} docs` : ''}
+                    {msg.data.confidence.document_count ? `${msg.data.confidence.document_count} docs` : ''}
                     {msg.data.confidence.timeseries_count ? ` · ${msg.data.confidence.timeseries_count} series` : ''}
                   </div>
                 )}
