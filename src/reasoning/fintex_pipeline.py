@@ -33,24 +33,81 @@ from src.retrieval import QueryRouter, DocumentRetriever, PakistanStockRetriever
 # QUERY CATEGORIZER
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Concept-level keywords for non-stock categories ──────────────────────────
+# These are stable financial terminology terms that do NOT need to be updated
+# when new stocks/tickers are added.
+# "stocks" is intentionally absent: stock detection is done dynamically
+# against the Supabase symbol cache inside FintexPipeline._categorize().
 CATEGORY_KEYWORDS = {
-    "stocks": ["stock", "share", "psx", "kse", "kse100", "kse-100", "price", "ticker",
-               "listed", "ipo", "dividend", "eps", "pe ratio", "market cap", "bull", "bear",
-               "invest", "portfolio", "scrip", "equity",
-               # Major PSX tickers as keywords
-               "engro", "hbl", "ubl", "mcb", "mebl", "ogdc", "ppl", "mari", "luck", "fccl",
-               "trg", "sys", "hubc", "kapco", "kel", "nestle", "ffc", "fatima", "bop",
-               "nbp", "unity", "psmc", "indu", "hcar", "avnr", "wtl"],
-    "monetary_policy": ["sbp", "state bank", "policy rate", "interest rate", "discount rate",
-                        "monetary policy", "reserve", "inflation target", "money supply"],
-    "banking": ["bank", "nbp", "banking sector",
-                "deposits", "advances", "non-performing", "npl", "spread"],
-    "theory": ["what is", "define", "explain", "concept", "theory", "difference between",
-               "how does", "meaning of", "economics", "finance theory", "fundamentals"],
-    "macro": ["gdp", "inflation", "cpi", "trade deficit", "balance of payments",
-              "fiscal deficit", "budget", "imf", "world bank", "remittances",
-              "forex", "exchange rate", "usd", "pkr", "rupee", "dollar"],
+    "stocks": [
+        # Only pure concept words — no ticker symbols here
+        "stock", "share", "psx", "kse", "kse100", "kse-100", "ticker",
+        "listed", "ipo", "dividend", "eps", "pe ratio", "market cap",
+        "scrip", "equity", "graphical data", "chart", "candlestick",
+        "moving average", "technical analysis", "fundamental analysis",
+    ],
+    "monetary_policy": [
+        "sbp", "state bank", "policy rate", "interest rate", "discount rate",
+        "monetary policy", "reserve", "inflation target", "money supply",
+    ],
+    "banking": [
+        "bank", "banking sector", "deposits", "advances",
+        "non-performing", "npl", "spread", "casa",
+    ],
+    "theory": [
+        "what is", "define", "explain", "concept", "theory",
+        "difference between", "how does", "meaning of",
+        "economics", "finance theory", "fundamentals",
+    ],
+    "macro": [
+        "gdp", "inflation", "cpi", "trade deficit", "balance of payments",
+        "fiscal deficit", "budget", "imf", "world bank", "remittances",
+        "forex", "exchange rate", "usd", "pkr", "rupee", "dollar",
+    ],
 }
+
+# ─── Off-topic signal words ────────────────────────────────────────────────────
+# If a query contains ANY of these and NO finance keywords, it is flagged as
+# out-of-scope.  Finance-adjacent terms ("trade", "dollar", "market") are
+# intentionally excluded from this list so they never cause false positives.
+OFF_TOPIC_SIGNALS = [
+    # Sports
+    "cricket", "football", "soccer", "hockey", "tennis", "basketball", "baseball",
+    "ipl", "psl", "fifa", "olympics", "athlete", "match", "tournament", "stadium",
+    "goal", "wicket", "runs", "batting", "bowling", "score",
+    # Entertainment / celebrities
+    "movie", "film", "actor", "actress", "singer", "song", "album", "celebrity",
+    "bollywood", "hollywood", "drama", "serial", "netflix", "youtube", "tiktok",
+    "instagram", "twitter", "facebook", "social media",
+    # Science / tech (non-finance)
+    "space", "nasa", "planet", "galaxy", "black hole", "quantum", "physics",
+    "chemistry", "biology", "medicine", "vaccine", "virus", "covid", "disease",
+    "robot", "artificial intelligence", "machine learning", "chatgpt", "openai",
+    # Food / cooking
+    "recipe", "cooking", "food", "restaurant", "cuisine", "biryani", "pizza",
+    "burger", "diet", "calories", "nutrition",
+    # Weather / geography
+    "weather", "temperature", "rain", "snow", "flood", "earthquake", "volcano",
+    "climate change", "global warming",
+    # History / politics (non-economic)
+    "war", "army", "military", "election", "prime minister", "president",
+    "parliament", "constitution", "political party",
+    # General knowledge
+    "joke", "poem", "story", "riddle", "quiz", "trivia",
+    "translate", "language", "grammar",
+    # Health
+    "doctor", "hospital", "medicine", "symptoms", "treatment", "surgery",
+]
+
+# Finance / Pakistan-finance whitelist: if ANY of these are in the query we
+# will never flag it as off-topic even if an off-topic word also appears.
+FINANCE_GUARD_WORDS = [
+    "stock", "share", "psx", "kse", "bank", "invest", "finance", "financial",
+    "rupee", "pkr", "sbp", "economy", "economic", "gdp", "inflation", "imf",
+    "dividend", "equity", "portfolio", "market", "trading", "commodity",
+    "forex", "exchange rate", "bond", "treasury", "fiscal", "monetary",
+    "pakistan", "psx", "karachi", "lahore",
+]
 
 
 STRONG_THEORY_PATTERNS = [
@@ -62,23 +119,41 @@ STRONG_THEORY_PATTERNS = [
 ]
 
 
-def categorize_query(query: str) -> Dict[str, str]:
+def is_off_topic(query: str) -> bool:
     """
-    Classify a user query into category + subcategory using keyword matching.
-    Returns: {"category": str, "subcategory": str}
+    Return True when a query is clearly outside Fintex's Pakistan-finance domain.
+
+    Logic:
+      1. If any FINANCE_GUARD_WORDS appear → never off-topic.
+      2. If any OFF_TOPIC_SIGNALS appear AND no finance guard word → off-topic.
+      3. If neither list matches → treat as in-scope (benefit of the doubt).
     """
     q = query.lower()
-    scores = {cat: 0 for cat in CATEGORY_KEYWORDS}
+    # Guard: any finance keyword keeps it in scope
+    if any(gw in q for gw in FINANCE_GUARD_WORDS):
+        return False
+    # Flag: obvious off-topic signal
+    if any(sig in q for sig in OFF_TOPIC_SIGNALS):
+        return True
+    return False
 
+
+def categorize_query(query: str) -> Dict[str, str]:
+    """
+    Legacy shim — delegates to keyword scoring only (no cache).
+    Prefer FintexPipeline._categorize() which also uses the Supabase
+    symbol cache and Qdrant metadata for dynamic stock detection.
+    """
+    q = query.lower()
+    if is_off_topic(query):
+        return {"category": "off_topic", "subcategory": "off_topic", "off_topic": True}
+
+    scores = {cat: 0 for cat in CATEGORY_KEYWORDS}
     for cat, keywords in CATEGORY_KEYWORDS.items():
         for kw in keywords:
             if kw in q:
                 scores[cat] += 1
 
-    # Strong-signal override: definitional/explanatory phrasings ("what is",
-    # "how does X differ", "define", "explain", etc.) force the theory track
-    # even when topical keywords like "dividend" or "pe ratio" appear. Those
-    # stock keywords are the *subject* of a theory question, not a trading query.
     if any(pat in q for pat in STRONG_THEORY_PATTERNS):
         best = "theory"
     else:
@@ -86,10 +161,7 @@ def categorize_query(query: str) -> Dict[str, str]:
         if scores[best] == 0:
             best = "general"
 
-    # Detect subcategory
-    subcategory = _detect_subcategory(q, best)
-
-    return {"category": best, "subcategory": subcategory}
+    return {"category": best, "subcategory": _detect_subcategory(q, best), "off_topic": False}
 
 
 def _detect_subcategory(query: str, category: str) -> str:
@@ -177,6 +249,81 @@ class FintexPipeline:
     7. Categorize → 8. Embed & Save back to Qdrant
     """
 
+    # ── Company full-name → PSX ticker map ──────────────────────────────────
+    # Covers the most commonly searched companies by their full / popular names.
+    # Add more entries here as needed.  Keys must be lowercase.
+    COMPANY_NAME_MAP: Dict[str, str] = {
+        # Banks
+        "habib bank": "HBL", "habib bank limited": "HBL",
+        "united bank": "UBL", "united bank limited": "UBL",
+        "mcb bank": "MCB", "muslim commercial bank": "MCB",
+        "meezan bank": "MEBL", "meezan bank limited": "MEBL",
+        "national bank": "NBP", "national bank of pakistan": "NBP",
+        "bank alfalah": "BAFL", "bank alfalah limited": "BAFL",
+        "bank al habib": "BAHL", "bank al habib limited": "BAHL",
+        "askari bank": "AKBL", "askari bank limited": "AKBL",
+        "faysal bank": "FABL", "faysal bank limited": "FABL",
+        "js bank": "JSBL", "js bank limited": "JSBL",
+        "standard chartered": "SCBPL",
+        "soneri bank": "SNBL",
+        "silkbank": "SILK",
+        "summit bank": "SMBL",
+        "bop": "BOP", "bank of punjab": "BOP",
+        "first women bank": "FFL",
+        # Energy / Oil & Gas
+        "oil and gas development": "OGDC", "ogdcl": "OGDC",
+        "pakistan petroleum": "PPL", "pakistan petroleum limited": "PPL",
+        "mari petroleum": "MARI",
+        "pakistan oilfields": "POL",
+        "attock petroleum": "APL",
+        "attock refinery": "ATRL",
+        "pakistan refinery": "PRL",
+        "byco petroleum": "BYCO",
+        "hub power": "HUBC", "hub power company": "HUBC",
+        "kapco": "KAPCO", "kot addu power": "KAPCO",
+        "k-electric": "KEL", "k electric": "KEL",
+        "pakistan state oil": "PSO",
+        "ssgc": "SSGC", "sui southern gas": "SSGC", "sui southern gas company": "SSGC",
+        # Fertilisers
+        "engro": "ENGRO", "engro corporation": "ENGRO",
+        "engro fertilizers": "EFERT",
+        "fauji fertilizer": "FFC", "fauji fertilizer company": "FFC",
+        "fatima fertilizer": "FATIMA",
+        "ffbl": "FFBL", "fauji fertilizer bin qasim": "FFBL",
+        # Cement
+        "lucky cement": "LUCK",
+        "fauji cement": "FCCL",
+        "maple leaf cement": "MLCF",
+        "cherat cement": "CHCC",
+        "pioneer cement": "PIOC",
+        "dg khan cement": "DGKC",
+        "bestway cement": "BWCL",
+        # Pharma
+        "abbott": "ABOT", "abbott laboratories": "ABOT",
+        "glaxosmithkline": "GSKCH", "gsk": "GSKCH",
+        "searle": "SEARL", "the searle company": "SEARL",
+        "ferozsons": "FEROZ",
+        "highnoon": "HINOON",
+        # Autos
+        "honda atlas": "HCAR",
+        "pak suzuki": "PSMC",
+        "indus motor": "INDU", "toyota": "INDU",
+        "millat tractors": "MTL",
+        # Tech
+        "systems limited": "SYS", "systems ltd": "SYS",
+        "trg pakistan": "TRG",
+        "netsol technologies": "NETSOL",
+        # Telecom
+        "pakistan telecommunication": "PTC", "ptcl": "PTC",
+        "worldcall": "WTL",
+        # FMCG
+        "nestle pakistan": "NESTLE",
+        "colgate": "COLG",
+        "unilever": "ULEVER",
+        # PSX index / market
+        "kse100": "KSE100", "kse-100": "KSE100",
+    }
+
     def __init__(self):
         self.settings = get_settings()
         genai.configure(api_key=self.settings.gemini_api_key)
@@ -186,7 +333,7 @@ class FintexPipeline:
         self.hf_chat_models = [self.settings.hf_chat_model] + [
             m for m in fallback_models if m != self.settings.hf_chat_model
         ]
-        
+
         # Initialize Hugging Face Inference Client for FinGPT.
         # Gated on hf_chat_enabled because HF's free serverless router 404s
         # for open chat models (Qwen/Llama/Gemma/Mistral) — see settings.py.
@@ -195,7 +342,7 @@ class FintexPipeline:
             self.hf_client = InferenceClient(
                 token=self.settings.huggingface_api_key
             )
-        
+
         self.qdrant = QdrantService()
         self.supabase = get_supabase_client()
         self.router = QueryRouter()
@@ -203,21 +350,138 @@ class FintexPipeline:
         self.stock_retriever = PakistanStockRetriever()
         self.web_retriever = LiveWebRetriever()
 
+        # Cache of all PSX symbols from Supabase — populated on first use.
+        self._psx_symbols_cache: Optional[set] = None
+
+    # ───────────────────────────────────────────────────────────────────
+    # DYNAMIC SYMBOL CACHE LOADER
+    # ───────────────────────────────────────────────────────────────────
+
+    def _ensure_symbols_loaded(self) -> None:
+        """
+        Eagerly populate self._psx_symbols_cache from Supabase stock_prices.
+        Idempotent: only hits the DB on the first call per instance.
+        """
+        if self._psx_symbols_cache is not None:
+            return
+        try:
+            raw = (
+                self.supabase.table("stock_prices")
+                .select("symbol")
+                .limit(5000)
+                .execute()
+            )
+            if raw.data:
+                self._psx_symbols_cache = {row["symbol"].upper() for row in raw.data}
+                print(f"[SymbolCache] Loaded {len(self._psx_symbols_cache)} symbols from Supabase")
+            else:
+                self._psx_symbols_cache = set()
+        except Exception as e:
+            print(f"[SymbolCache] Failed to load: {e}")
+            self._psx_symbols_cache = set()
+
+    # ───────────────────────────────────────────────────────────────────
+    # DYNAMIC QUERY CATEGORIZER
+    # ───────────────────────────────────────────────────────────────────
+
+    def _categorize(self, query: str, qdrant_results: list) -> Dict[str, str]:
+        """
+        Dynamic, three-signal categorizer.
+
+        Signal 1 — Off-topic guard (always checked first).
+        Signal 2 — Supabase symbol cache + COMPANY_NAME_MAP.
+                    Any query that mentions a known PSX ticker or a full company
+                    name is immediately routed to "stocks" WITHOUT needing a
+                    hardcoded list in CATEGORY_KEYWORDS.
+        Signal 3 — Qdrant result metadata.
+                    The sector_category stored on each Qdrant hit is used as a
+                    voting signal so queries that semantically match theoretical
+                    documents are reliably routed to "theory" or "macro" etc.
+        Signal 4 — Fallback keyword scoring (CATEGORY_KEYWORDS, concept-only).
+        """
+        import re as _re
+
+        q_lower = query.lower()
+        q_upper = query.upper()
+
+        # ── Signal 1: off-topic check ────────────────────────────────────
+        if is_off_topic(query):
+            return {"category": "off_topic", "subcategory": "off_topic", "off_topic": True}
+
+        # ── Signal 2a: symbol cache (Supabase) ────────────────────────────
+        # Tokenise the query as uppercase words (≥3 chars) and check against
+        # the full PSX symbol set loaded from Supabase stock_prices.
+        if self._psx_symbols_cache:
+            words = set(_re.findall(r'\b[A-Z0-9]{2,}\b', q_upper))
+            if words & self._psx_symbols_cache:
+                print(f"[Categorize] Stock detected via Supabase cache")
+                return {"category": "stocks", "subcategory": "price_query", "off_topic": False}
+
+        # ── Signal 2b: COMPANY_NAME_MAP (full company names) ─────────────
+        for name in sorted(self.COMPANY_NAME_MAP, key=len, reverse=True):
+            if name in q_lower:
+                print(f"[Categorize] Stock detected via name map: '{name}'")
+                return {"category": "stocks", "subcategory": "price_query", "off_topic": False}
+
+        # ── Signal 3: Qdrant result sector_category metadata voting ──────
+        # If the top Qdrant hits are predominantly from one category, trust it.
+        if qdrant_results:
+            votes: Dict[str, float] = {}
+            for r in qdrant_results:
+                qdrant_cat = (
+                    r.get("sector_category")
+                    or (r.get("metadata") or {}).get("sector_category")
+                )
+                score = float(r.get("score", 0.5))
+                if qdrant_cat:
+                    votes[qdrant_cat] = votes.get(qdrant_cat, 0) + score
+
+            if votes:
+                qdrant_best = max(votes, key=votes.get)
+                # Only trust the Qdrant signal if it is NOT a theory/definitional
+                # question (theory override below takes precedence)
+                if not any(pat in q_lower for pat in STRONG_THEORY_PATTERNS):
+                    print(f"[Categorize] Category from Qdrant metadata: '{qdrant_best}'")
+                    return {
+                        "category": qdrant_best,
+                        "subcategory": _detect_subcategory(q_lower, qdrant_best),
+                        "off_topic": False,
+                    }
+
+        # ── Signal 4: Concept-level keyword scoring (fallback) ──────────
+        # STRONG_THEORY_PATTERNS override takes priority over score.
+        if any(pat in q_lower for pat in STRONG_THEORY_PATTERNS):
+            return {"category": "theory", "subcategory": "theory", "off_topic": False}
+
+        scores = {cat: 0 for cat in CATEGORY_KEYWORDS}
+        for cat, keywords in CATEGORY_KEYWORDS.items():
+            for kw in keywords:
+                if kw in q_lower:
+                    scores[cat] += 1
+
+        best = max(scores, key=scores.get)
+        if scores[best] == 0:
+            best = "general"
+
+        return {
+            "category": best,
+            "subcategory": _detect_subcategory(q_lower, best),
+            "off_topic": False,
+        }
+
     def answer(self, query: str, use_reasoning: bool = True,
                format: str = "detailed", user_id: str = None,
                conversation_id: str = None) -> Dict[str, Any]:
         """
         Full Fintex answer pipeline.
         """
-        # ── Step 0: Categorize ──
-        cat = categorize_query(query)
-        category = cat["category"]
-        subcategory = cat["subcategory"]
+        # ── Eagerly load symbol cache so _categorize() can use it ──────────
+        self._ensure_symbols_loaded()
 
-        # ── Step 1: Embed the question ──
+        # ── Step 1: Embed the question ───────────────────────────────────
         query_embedding = embed_text(query)
 
-        # ── Step 2: Search Qdrant (vector similarity) ──
+        # ── Step 2: Search Qdrant (vector similarity) ────────────────────
         qdrant_results = []
         try:
             qdrant_results = self.qdrant.search(
@@ -229,6 +493,15 @@ class FintexPipeline:
             print(f"Qdrant search error: {e}")
 
         qdrant_found = len(qdrant_results) > 0
+
+        # ── Step 0 (after Qdrant): Dynamic categorization ─────────────────
+        # Runs AFTER the Qdrant search so Qdrant metadata can vote on the
+        # category, and AFTER the cache is guaranteed to be loaded.
+        cat = self._categorize(query, qdrant_results)
+        category = cat["category"]
+        subcategory = cat["subcategory"]
+        off_topic = cat.get("off_topic", False)
+        print(f"[Pipeline] category={category} subcategory={subcategory} off_topic={off_topic}")
 
         # ── Step 3: Search Supabase (keyword match on past messages) ──
         supabase_results = []
@@ -266,7 +539,8 @@ class FintexPipeline:
 
         # ── Step 5: Decision Matrix ──
         accuracy_min, accuracy_max, source_label = self._decision_matrix(
-            qdrant_found, supabase_found, has_live_data, gemini_called, gemini_failed
+            qdrant_found, supabase_found, has_live_data, gemini_called, gemini_failed,
+            off_topic=off_topic
         )
 
         # ── Step 6: Generate Final Answer (FinGPT - HF Inference) ──
@@ -340,26 +614,56 @@ class FintexPipeline:
         sources = self._build_sources(qdrant_results, supabase_results, category, source_label)
 
         # ── Step 7: Fetch chart data whenever a known PSX ticker is mentioned ──
-        # This runs regardless of category so that comparison ("ENGRO vs FFBL")
-        # and stock-themed theory ("explain HBL's dividend yield") queries still
-        # render the dashboard. Safety: we only match a hardcoded whitelist of
-        # symbols literally present as whole words, so English words like "HOW"
-        # or "RATIO" cannot be promoted to fake tickers.
+        # Supports both ticker symbols (HBL) and full company names (Habib Bank Limited).
+        # Symbol list is loaded dynamically from Supabase so all ingested stocks work.
         chart_data = None
         detected_ticker = None
         try:
             import re
-            known_psxsymbols = {
-                "ENGRO", "HBL", "UBL", "MCB", "MEBL", "OGDC", "PPL", "MARI",
-                "LUCK", "FCCL", "TRG", "SYS", "HUBC", "KAPCO", "KEL", "NESTLE",
-                "FFC", "FATIMA", "BOP", "NBP", "UNITY", "PSMC", "INDU", "HCAR",
-                "MLCF", "CHCC", "POL", "FNEL", "WTL", "PAEL", "ENGROH", "WAVES",
-                "AVN", "PTC", "AABS", "KML", "TPLRF1", "FFBL", "EFERT",
-            }
-            q_upper = query.upper()
-            words = set(re.findall(r'\b\w+\b', q_upper))
-            found_tickers = [sym for sym in known_psxsymbols if sym in words]
-            found_tickers = list(dict.fromkeys(found_tickers))
+
+            # ── 7a: Resolve full company names → tickers (ALL matches) ─────────
+            # Collect every name→ticker pair found in the query — do NOT break
+            # after the first hit so comparison queries like "Engro vs FFBL"
+            # resolve both companies.
+            q_lower = query.lower()
+            name_resolved_tickers: List[str] = []
+            seen_name_tickers: set = set()
+            # Longest-name-first prevents shorter aliases masking longer ones
+            for name, ticker in sorted(
+                self.COMPANY_NAME_MAP.items(), key=lambda x: len(x[0]), reverse=True
+            ):
+                if name in q_lower and ticker not in seen_name_tickers:
+                    name_resolved_tickers.append(ticker)
+                    seen_name_tickers.add(ticker)
+                    print(f"[TickerResolver] '{name}' → {ticker}")
+
+            # Build an augmented query string that includes all resolved tickers
+            # so the word-boundary scan in 7c can also find them.
+            resolved_query = query + (
+                (" " + " ".join(name_resolved_tickers)) if name_resolved_tickers else ""
+            )
+
+            # ── 7b: Symbol cache (already loaded at top of answer()) ─────
+            # _ensure_symbols_loaded() was called at the start, so
+            # self._psx_symbols_cache is guaranteed to be a set here.
+
+            # ── 7c: Match whole-word tokens against the full symbol list ───────
+            # Use Supabase cache PLUS COMPANY_NAME_MAP values as a guaranteed
+            # fallback so comparison queries work even on a cache-miss.
+            # Tokens ≤ 2 chars are skipped to avoid false matches ("IS", "AT").
+            fallback_symbols = set(self.COMPANY_NAME_MAP.values())
+            symbol_universe = (self._psx_symbols_cache or set()) | fallback_symbols
+
+            q_upper = resolved_query.upper()
+            words = set(re.findall(r'\b[A-Z0-9]{3,}\b', q_upper))
+            found_tickers = [
+                sym for sym in symbol_universe if sym in words
+            ]
+            # Prepend name-resolved tickers so they appear first (primary stocks)
+            for t in reversed(name_resolved_tickers):
+                if t not in found_tickers:
+                    found_tickers.insert(0, t)
+            found_tickers = list(dict.fromkeys(found_tickers))  # deduplicate, preserve order
 
             if found_tickers:
                 detected_ticker = ",".join(found_tickers)
@@ -522,18 +826,27 @@ class FintexPipeline:
 
     def _decision_matrix(self, qdrant_found: bool,
                          supabase_found: bool, has_live_data: bool,
-                         gemini_called: bool, gemini_failed: bool) -> Tuple[int, int, str]:
+                         gemini_called: bool, gemini_failed: bool,
+                         off_topic: bool = False) -> Tuple[int, int, str]:
         """
         Returns (accuracy_min, accuracy_max, source_label) per Section 6 Scoring Logic.
+
+        Off-topic queries are always capped at ≤ 65 regardless of data found,
+        because Fintex is a Pakistan-finance specialist and should not
+        present high confidence on unrelated topics.
         """
+        # ── Off-topic override (always < 70) ──────────────────────────────
+        if off_topic:
+            return 25, 50, "🚫 Out of Scope — Fintex covers Pakistan Finance only"
+
         # 1. Qdrant ✅ + Supabase ✅ (both had relevant data)
         if qdrant_found and (supabase_found or has_live_data):
             return 88, 96, "✅ Grounded in Verified Indexed Data"
-            
+
         # 2. Qdrant ✅ only
         if qdrant_found:
             return 75, 87, "📚 Verified Knowledge Base"
-            
+
         # 3. Supabase ✅ only
         if supabase_found or has_live_data:
             return 70, 82, "📂 Internal Database Records"
@@ -544,7 +857,7 @@ class FintexPipeline:
 
         # 5. FinGPT failed, Gemini answered directly (Emergency fallback)
         if gemini_failed or (not qdrant_found and not supabase_found and not gemini_called):
-             return 30, 45, "🤖 AI Logical Extension"
+            return 30, 45, "🤖 AI Logical Extension"
 
         # Default (FinGPT only / no DB hit)
         return 58, 72, "🧠 FinGPT Primary Reasoning"
@@ -586,13 +899,25 @@ class FintexPipeline:
                 routing = self.router.route(query, use_llm=False)
                 entities = routing.get("entities", [])
                 symbols = [e.upper() for e in entities if len(e) >= 2]
-                
+
                 if not symbols:
-                    q_upper = query.upper()
-                    known_psx = ["ENGRO", "HBL", "UBL", "MCB", "MEBL", "OGDC", "PPL", "MARI", "LUCK", "FCCL", "FFBL"]
-                    for s in known_psx:
-                        if s in q_upper:
-                            symbols = [s]
+                    # Try name resolution first
+                    q_lower = query.lower()
+                    for name, ticker in sorted(
+                        self.COMPANY_NAME_MAP.items(), key=lambda x: len(x[0]), reverse=True
+                    ):
+                        if name in q_lower:
+                            symbols = [ticker]
+                            break
+
+                if not symbols:
+                    # Fall back to dynamic symbol list from cache
+                    psx_set = self._psx_symbols_cache or set()
+                    import re as _re
+                    words = _re.findall(r'\b[A-Z0-9]{3,}\b', query.upper())
+                    for w in words:
+                        if w in psx_set:
+                            symbols = [w]
                             break
                 
                 if symbols:
@@ -649,7 +974,7 @@ class FintexPipeline:
                       category: str, format: str) -> str:
         """
         Build the LLM prompt with strict formatting rules based on category.
-        Enforces the FinGPT persona.
+        Enforces the FinGPT persona and respects the user-selected format.
         """
         base = """You are FinGPT, a specialized financial research agent. 
 Your goal is to provide high-accuracy research based on retrieved financial data.
@@ -662,39 +987,51 @@ USER QUESTION: "{query}"
 
 Strictly follow these formatting rules:
 """
+        # Define general format modifiers
+        if format == "brief":
+            format_instruction = "KEEP IT BRIEF: Max 2 paragraphs or a short summary. Skip secondary sections."
+        elif format == "bullet":
+            format_instruction = "USE BULLET POINTS: Use a list-based structure (3-7 points). No long paragraphs."
+        else:
+            format_instruction = "Detailed analysis requested. Be thorough and well-structured."
 
         if category == "stocks":
-            return base.format(context=context, query=query) + """
-IMPORTANT: Structure your answer EXACTLY in this order with these headings:
-
+            structure = """
 ### 📊 Company Background
 - Company full name, PSX ticker symbol, sector/industry
-- Brief 2-3 sentence description of the company
-- Founded year and headquarters if known
-
+- Brief 1-2 sentence description
+"""
+            if format != "brief":
+                structure += """
 ### 📈 Performance Analysis
 - Analyze performance based on available data
-- For each significant period: explain why price went up or down
-- Be specific: mention exact percentage changes where possible
-- Reference earnings, macro events, SBP rate changes, political climate
-
+- Explain price movements, macro events, or SBP rate changes
+"""
+            
+            opinion_len = "3-4 paragraphs" if format == "detailed" else "1 concise paragraph"
+            structure += f"""
 ### 🧠 Fintex Investment Opinion
-Write 3-4 paragraphs:
-1. Overall sentiment — bullish, bearish, or neutral based on recent trend
-2. Why to invest (if applicable) — fundamentals, sector growth, undervaluation
-3. Why NOT to invest (if applicable) — risks, volatility, macro headwinds
-4. When to invest — specific signals to watch for
+Write {opinion_len}:
+- Overall sentiment (bullish/bearish/neutral)
+- Key reasons to invest or be cautious
+- Specific signals to watch
 
 End with this exact disclaimer in italic:
 *"This is an AI-generated opinion for educational purposes only. It is not financial advice. Please consult a licensed financial advisor before making investment decisions."*
-
-Your Answer:
 """
+            return base.format(context=context, query=query) + f"\nFormat Rule: {format_instruction}\n" + structure
 
         elif category == "theory":
-            return base.format(context=context, query=query) + """
-IMPORTANT: Structure your answer EXACTLY in this order with these headings:
+            if format == "brief":
+                structure = """
+### 📖 Definition
+1-2 sentence crisp definition.
 
+### 🔑 Key Points
+4-5 quick bullet points.
+"""
+            else:
+                structure = """
 ### 📖 Definition
 1-2 sentence crisp definition.
 
@@ -705,30 +1042,22 @@ IMPORTANT: Structure your answer EXACTLY in this order with these headings:
 A bullet-point summary of 4-6 key takeaways.
 
 ### 🇵🇰 Pakistan Context
-A short paragraph linking the theory to Pakistan's financial environment (SBP, PSX, NBP, macroeconomic conditions).
-
-### 📚 Further Reading
-Provide 3-5 real, verifiable URLs. Prefer these sources:
-- sbp.org.pk (State Bank of Pakistan)
-- psx.com.pk (Pakistan Stock Exchange)
-- investopedia.com (for global theory)
-- nbp.com.pk (National Bank of Pakistan)
-- imf.org or worldbank.org for macro topics
-Format each as: [Title](URL)
-
-Your Answer:
+A short paragraph linking the theory to Pakistan's financial environment.
 """
+            # Always add further reading for theory
+            structure += """
+### 📚 Further Reading
+Provide 3-4 real, verifiable URLs (sbp.org.pk, psx.com.pk, investopedia.com).
+"""
+            return base.format(context=context, query=query) + f"\nFormat Rule: {format_instruction}\n" + structure
 
         elif category == "monetary_policy":
-            return base.format(context=context, query=query) + """
-Structure your answer covering:
+            length_instr = "concisely in 3-5 points" if format != "detailed" else "thoroughly with historical context"
+            return base.format(context=context, query=query) + f"""
+Structure your answer covering {length_instr}:
 1. Current policy stance and recent changes
-2. Historical context and trend
-3. Impact on banking sector and economy
-4. Pakistan-specific implications
-5. Key data points with dates and figures
-
-Your Answer:
+2. Impact on banking sector and economy
+3. Key data points (dates, figures)
 """
 
         else:
@@ -747,9 +1076,6 @@ Rules:
 2. Cite specific sources when making claims
 3. If evidence is insufficient, clearly state what's missing
 4. Use clear, professional language
-5. For numerical data, be precise and include units
-
-Your Answer:
 """
 
     # ─────────────────────────────────────────────────────────────────────

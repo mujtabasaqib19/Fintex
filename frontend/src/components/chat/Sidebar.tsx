@@ -15,6 +15,7 @@ import {
   PanelLeft,
 } from 'lucide-react';
 import ThemeToggle from '../shared/ThemeToggle';
+import MarketStatus from './MarketStatus';
 import { useAuth } from '../../hooks/useAuth';
 import type { Conversation } from '../../lib/supabase';
 
@@ -95,6 +96,7 @@ export default function ChatSidebar({
         <NavLink to="/dashboard" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
           <BarChart3 size={16} /> Dashboard
         </NavLink>
+        <MarketStatus />
         <NavLink to="/settings" className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}>
           <Settings size={16} /> Settings
         </NavLink>

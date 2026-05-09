@@ -10,7 +10,6 @@ import { useConversations } from '../hooks/useConversations';
 import { getMessages, saveMessage } from '../lib/supabase';
 import ChatSidebar from '../components/chat/Sidebar';
 import AccuracyBadge from '../components/chat/AccuracyBadge';
-import OptimizeButton from '../components/chat/OptimizeButton';
 import StockDashboard from '../components/chat/StockDashboard';
 import FurtherReadingLinks from '../components/chat/FurtherReadingLinks';
 
@@ -45,7 +44,6 @@ export default function ChatPage() {
   const [format, setFormat] = useState<'detailed' | 'brief' | 'bullet'>('detailed');
   const [useReasoning, setUseReasoning] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [optimizeFlash, setOptimizeFlash] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isFirstMessage = useRef(true);
 
@@ -190,12 +188,6 @@ export default function ChatPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleOptimized = (text: string) => {
-    setInput(text);
-    setOptimizeFlash(true);
-    setTimeout(() => setOptimizeFlash(false), 800);
   };
 
   const getSourceIcon = (source: { type?: string; source_type?: string }) => {
@@ -358,9 +350,7 @@ export default function ChatPage() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleSend(); }}
               disabled={loading}
-              className={optimizeFlash ? 'optimize-flash' : ''}
             />
-            <OptimizeButton inputText={input} onOptimized={handleOptimized} />
           </div>
           <button className="btn btn-primary" onClick={handleSend} disabled={loading || !input.trim()}>
             {loading ? <span className="spinner" /> : '→'}
