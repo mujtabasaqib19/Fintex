@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     
     # Google Gemini AI (for chat/reasoning only)
     gemini_api_key: str = Field(..., env="GEMINI_API_KEY")
-    chat_model: str = "gemini-2.5-flash"
+    chat_model: str = "gemini-2.0-flash"
     chat_model_fallbacks: str = Field(
-        default="gemini-flash-latest,gemini-2.0-flash,gemini-1.5-flash-002,gemini-pro-latest",
+        default="gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-flash-002,gemini-1.5-flash",
         env="CHAT_MODEL_FALLBACKS",
     )
     embedding_model: str = "models/embedding-001"

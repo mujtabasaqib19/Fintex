@@ -459,6 +459,35 @@ async def route_query(query: str, use_llm: bool = False):
 
 
 # =============================================================================
+# LIVE BENCHMARK ENDPOINTS
+# =============================================================================
+
+@router.get("/benchmark/stats")
+async def benchmark_stats(days: int = 7):
+    """
+    Aggregate quality metrics for all real user queries in the last N days.
+    Returns pass rate, avg score, per-category breakdown, and worst queries.
+    """
+    try:
+        from src.evaluation.live_benchmark import get_tracker
+        return get_tracker().get_stats(days=days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/benchmark/recent")
+async def benchmark_recent(limit: int = 50):
+    """
+    Most recent N benchmark result rows — useful for a live dashboard feed.
+    """
+    try:
+        from src.evaluation.live_benchmark import get_tracker
+        return {"results": get_tracker().get_recent(limit=limit)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
 # DASHBOARD DATA ENDPOINTS
 # =============================================================================
 

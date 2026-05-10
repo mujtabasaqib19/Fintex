@@ -367,6 +367,318 @@ class PakistanStockRetriever:
         }
     
     # =========================================================================
+    # TECHNICAL ANALYSIS FOR PREDICTIONS
+    # =========================================================================
+
+    def _compute_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:
+        """Relative Strength Index over the last `period` closes."""
+        if len(prices) < period + 1:
+            return None
+        deltas = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+        gains = [d if d > 0 else 0.0 for d in deltas[-period:]]
+        losses = [-d if d < 0 else 0.0 for d in deltas[-period:]]
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    def _compute_ema(self, prices: List[float], period: int) -> List[float]:
+        """Exponential Moving Average; seeds with SMA of first `period` values."""
+        if len(prices) < period:
+            return []
+        k = 2.0 / (period + 1)
+        ema = [sum(prices[:period]) / period]
+        for price in prices[period:]:
+            ema.append(price * k + ema[-1] * (1 - k))
+        return ema
+
+    def _compute_macd(self, prices: List[float]) -> Optional[Dict[str, Any]]:
+        """MACD (12,26,9). Requires at least 34 data points."""
+        if len(prices) < 34:
+            return None
+        ema12 = self._compute_ema(prices, 12)
+        ema26 = self._compute_ema(prices, 26)
+        if not ema12 or not ema26:
+            return None
+        offset = len(ema12) - len(ema26)
+        macd_line = [ema12[i + offset] - ema26[i] for i in range(len(ema26))]
+        if len(macd_line) < 9:
+            return None
+        signal_line = self._compute_ema(macd_line, 9)
+        if not signal_line:
+            return None
+        macd_val = macd_line[-1]
+        signal_val = signal_line[-1]
+        histogram = macd_val - signal_val
+        return {
+            'macd': round(macd_val, 4),
+            'signal': round(signal_val, 4),
+            'histogram': round(histogram, 4),
+            'trend': 'bullish' if histogram > 0 else 'bearish',
+        }
+
+    def _compute_bollinger_bands(self, prices: List[float], window: int = 20) -> Optional[Dict[str, float]]:
+        """Bollinger Bands (SMA ± 2σ) over `window` periods."""
+        if len(prices) < window:
+            return None
+        recent = prices[-window:]
+        sma = sum(recent) / window
+        variance = sum((p - sma) ** 2 for p in recent) / window
+        std = variance ** 0.5
+        return {
+            'upper': round(sma + 2 * std, 2),
+            'middle': round(sma, 2),
+            'lower': round(sma - 2 * std, 2),
+            'bandwidth': round((4 * std / sma) * 100, 2) if sma > 0 else 0.0,
+        }
+
+    def compute_technical_indicators(self, symbol: str, days: int = 180) -> Optional[Dict[str, Any]]:
+        """
+        Compute RSI, MACD, Bollinger Bands, SMAs, momentum, and support/resistance
+        from historical OHLCV data. Returns None if insufficient data.
+
+        Uses a 180-day lookback by default (up from 60) with a 35-day warmup
+        buffer so MACD (which needs 34 bars) computes even for stocks that
+        trade only a few times per week.  The minimum data threshold is 7
+        trading days (down from 15) so partial indicators are still returned
+        for thinly-traded PSX scrips.
+        """
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days + 35)  # warmup buffer
+        data = self.get_price_history(symbol, start_date, end_date, limit=days + 35)
+        if not data or len(data) < 7:
+            return None
+
+        closes = [float(d['close']) for d in data if d.get('close')]
+        volumes = [int(d.get('volume', 0)) for d in data]
+        if len(closes) < 7:
+            return None
+
+        result: Dict[str, Any] = {
+            'symbol': symbol,
+            'data_points': len(closes),
+            'latest_price': closes[-1],
+            'latest_date': data[-1].get('date'),
+        }
+
+        # SMAs
+        for period, key in [(7, 'sma_7'), (14, 'sma_14'), (30, 'sma_30')]:
+            if len(closes) >= period:
+                result[key] = round(sum(closes[-period:]) / period, 2)
+
+        # RSI
+        rsi = self._compute_rsi(closes)
+        if rsi is not None:
+            result['rsi'] = round(rsi, 2)
+            result['rsi_signal'] = (
+                'overbought' if rsi > 70 else ('oversold' if rsi < 30 else 'neutral')
+            )
+
+        # MACD
+        macd = self._compute_macd(closes)
+        if macd:
+            result['macd'] = macd
+
+        # Bollinger Bands
+        bb = self._compute_bollinger_bands(closes)
+        if bb:
+            result['bollinger_bands'] = bb
+            price = closes[-1]
+            if price >= bb['upper']:
+                result['bb_signal'] = 'near_upper_band'
+            elif price <= bb['lower']:
+                result['bb_signal'] = 'near_lower_band'
+            else:
+                result['bb_signal'] = 'within_bands'
+
+        # Volume trend: last 5 days vs previous 5 days
+        if len(volumes) >= 10:
+            recent_avg = sum(volumes[-5:]) / 5
+            prev_avg = sum(volumes[-10:-5]) / 5
+            if prev_avg > 0:
+                vol_change = ((recent_avg - prev_avg) / prev_avg) * 100
+                result['volume_trend'] = round(vol_change, 1)
+                result['volume_signal'] = (
+                    'increasing' if vol_change > 10 else
+                    ('decreasing' if vol_change < -10 else 'stable')
+                )
+
+        # Price momentum (n-day returns)
+        for n, key in [(5, 'momentum_5d'), (10, 'momentum_10d')]:
+            if len(closes) >= n + 1:
+                base = closes[-(n + 1)]
+                if base > 0:
+                    result[key] = round(((closes[-1] - base) / base) * 100, 2)
+
+        # Support / Resistance from 30-day swing highs/lows
+        recent_data = data[-30:]
+        highs = [float(d.get('high', d.get('close', 0))) for d in recent_data]
+        lows = [float(d.get('low', d.get('close', 0))) for d in recent_data]
+        if highs:
+            result['resistance'] = round(max(highs), 2)
+        if lows:
+            result['support'] = round(min(lows), 2)
+
+        # Composite signal from RSI, MACD, SMA crossover, and momentum
+        signals = []
+        rsi_val = result.get('rsi')
+        if rsi_val is not None:
+            signals.append('bullish' if rsi_val < 40 else ('bearish' if rsi_val > 60 else 'neutral'))
+        if macd:
+            signals.append('bullish' if macd['histogram'] > 0 else 'bearish')
+        if result.get('sma_7') and result.get('sma_30'):
+            signals.append('bullish' if result['sma_7'] > result['sma_30'] else 'bearish')
+        if result.get('momentum_5d') is not None:
+            signals.append('bullish' if result['momentum_5d'] > 0 else 'bearish')
+
+        if signals:
+            bull = signals.count('bullish')
+            bear = signals.count('bearish')
+            total = len(signals)
+            if bull > bear:
+                result['overall_signal'] = 'bullish'
+                result['signal_strength'] = round((bull / total) * 100)
+            elif bear > bull:
+                result['overall_signal'] = 'bearish'
+                result['signal_strength'] = round((bear / total) * 100)
+            else:
+                result['overall_signal'] = 'neutral'
+                result['signal_strength'] = 50
+
+        return result
+
+    def generate_prediction_context(self, symbol: str, target_date: Optional[date] = None) -> str:
+        """
+        Build a structured technical-analysis block ready for LLM prediction prompts.
+        Fetches and computes indicators from Supabase OHLCV data.
+
+        Falls back to a raw-stats block when full indicator computation is not
+        possible (too few trading days), so the LLM always receives *some*
+        numerical grounding rather than an "unavailable" dead-end string.
+        """
+        indicators = self.compute_technical_indicators(symbol)
+        if not indicators:
+            # Fallback: try to build a minimal stats block from raw price history
+            stats = self.get_price_stats(symbol, days=90)
+            if not stats:
+                return (
+                    f"## Technical Analysis: {symbol} — No Data Available\n"
+                    f"No historical price data found in the Supabase stock_prices table for "
+                    f"{symbol}. This symbol may not be tracked yet or may have an alternate "
+                    f"ticker.  Please verify the PSX ticker and retry."
+                )
+            lines = [
+                f"## Technical Analysis: {symbol} (Limited Data — Stats Only)",
+                f"**Note:** Fewer than 7 trading days of OHLCV data available; "
+                f"full indicator computation skipped.  Using 90-day price statistics instead.",
+                f"**Latest Close:** PKR {stats['latest_close']:.2f}  (as of {stats.get('latest_date', 'N/A')})",
+                f"**90-Day Range:** PKR {stats['min_close']:.2f} – PKR {stats['max_close']:.2f}",
+                f"**90-Day Change:** {stats.get('change_percent', 0):+.2f}%  "
+                f"(Trend: {stats.get('trend', 'stable').upper()})",
+                f"**Avg Daily Volume:** {stats.get('avg_volume', 0):,.0f} shares",
+            ]
+            if target_date:
+                days_ahead = (target_date - date.today()).days
+                lines.append(
+                    f"\n### Prediction Horizon: {target_date.strftime('%B %d, %Y')} "
+                    f"({days_ahead} day(s) from today)"
+                )
+            return "\n".join(lines)
+
+        stats = self.get_price_stats(symbol, days=30)
+        price = indicators['latest_price']
+        lines = [f"## Technical Analysis: {symbol} (Prediction Context)"]
+        lines.append(f"**Latest Price:** PKR {price:.2f}  (as of {indicators['latest_date']})")
+
+        if stats:
+            chg = stats.get('change_percent', 0)
+            lo = stats.get('min_close', 0)
+            hi = stats.get('max_close', 0)
+            lines.append(f"**30-Day Performance:** {chg:+.2f}%  |  Range: PKR {lo:.2f} – PKR {hi:.2f}")
+
+        # Moving averages
+        lines.append("\n### Moving Averages")
+        for period, key in [(7, 'sma_7'), (14, 'sma_14'), (30, 'sma_30')]:
+            val = indicators.get(key)
+            if val:
+                direction = "ABOVE" if price > val else "BELOW"
+                diff_pct = ((price - val) / val * 100) if val > 0 else 0
+                lines.append(f"- SMA{period}: PKR {val:.2f}  →  Price {direction} by {abs(diff_pct):.1f}%")
+
+        # RSI
+        rsi = indicators.get('rsi')
+        if rsi is not None:
+            sig = indicators.get('rsi_signal', '').upper()
+            lines.append(f"\n### RSI (14-period): {rsi:.1f}  [{sig}]")
+            lines.append("  (>70 = overbought / sell pressure  |  <30 = oversold / buy pressure)")
+
+        # MACD
+        macd = indicators.get('macd')
+        if macd:
+            lines.append(
+                f"\n### MACD:  {macd['macd']:+.4f}  |  Signal: {macd['signal']:+.4f}  "
+                f"|  Histogram: {macd['histogram']:+.4f}  [{macd['trend'].upper()}]"
+            )
+
+        # Bollinger Bands
+        bb = indicators.get('bollinger_bands')
+        if bb:
+            bb_sig = indicators.get('bb_signal', 'within_bands').replace('_', ' ')
+            lines.append(
+                f"\n### Bollinger Bands (20-period):  "
+                f"Upper PKR {bb['upper']:.2f}  |  Mid PKR {bb['middle']:.2f}  |  Lower PKR {bb['lower']:.2f}"
+            )
+            lines.append(f"  Price position: {bb_sig}  (bandwidth: {bb.get('bandwidth', 0):.1f}%)")
+
+        # Support / Resistance
+        sup = indicators.get('support')
+        res = indicators.get('resistance')
+        if sup and res:
+            lines.append(f"\n### Key Levels (30-day):  Support PKR {sup:.2f}  |  Resistance PKR {res:.2f}")
+
+        # Volume
+        if 'volume_signal' in indicators:
+            lines.append(
+                f"\n### Volume Trend: {indicators.get('volume_trend', 0):+.1f}%  "
+                f"[{indicators['volume_signal'].upper()}]"
+            )
+
+        # Momentum
+        m5 = indicators.get('momentum_5d')
+        m10 = indicators.get('momentum_10d')
+        if m5 is not None:
+            m10_str = f"{m10:+.2f}%" if m10 is not None else "N/A"
+            lines.append(f"\n### Momentum:  5-day {m5:+.2f}%  |  10-day {m10_str}")
+
+        # Overall signal
+        sig = indicators.get('overall_signal', 'neutral')
+        strength = indicators.get('signal_strength', 50)
+        lines.append(
+            f"\n### Overall Technical Signal: **{sig.upper()}**  "
+            f"({strength}% of indicators agree)"
+        )
+
+        # Target date context
+        if target_date:
+            days_ahead = (target_date - date.today()).days
+            if days_ahead <= 2:
+                horizon = "very short-term (1-2 days)"
+            elif days_ahead <= 7:
+                horizon = "short-term (up to 1 week)"
+            elif days_ahead <= 14:
+                horizon = "medium-term (1-2 weeks)"
+            else:
+                horizon = "medium/long-term (2+ weeks)"
+            lines.append(
+                f"\n### Prediction Horizon:  {target_date.strftime('%B %d, %Y')}  "
+                f"({days_ahead} day(s) from today — {horizon})"
+            )
+
+        return "\n".join(lines)
+
+    # =========================================================================
     # COMPARISON & RANKING
     # =========================================================================
     

@@ -45,3 +45,6 @@ desktop.ini
 out.txt
 chat_dump.txt
 tmp_psx_test.py
+backtest_report.json
+scratch/
+.deepeval/
